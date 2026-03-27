@@ -1,51 +1,51 @@
-# MessAPI
-MessAPI is scalable Backend-as-a-Service (BaaS) platform for real-time messaging with WebSocket and RESTAPI support.
+# MessBaaS
 
-## Services Overview
+MessBaaS is a single-node high-frequency chat server built on plain Netty, raw JDBC, MySQL, and native WebSocket delivery.
 
-- User Service
-- Rate Limiter (Redis distributed lock)
-- Message queue (Kafka)
+## Architecture
+
+- Netty handles HTTP APIs and WebSocket upgrades directly.
+- JDBC repositories persist users, channels, and messages with raw SQL.
+- Each channel keeps a bounded in-memory hot buffer of recent messages for fast history reads.
+- Messages are written through to MySQL, appended to the hot buffer, and then broadcast in-process to subscribed websocket channels.
 
 ## Tech Stack
 
-The technologies used in this project are:
-
-- Java
-- Spring
-- Kafka
-- Redis
-- WebSocket
-- Docker
+- Java 21
+- Netty
+- Raw JDBC
+- HikariCP
+- Flyway
+- Jackson
 - MySQL
+- Docker
 
-## Application Architecture
-![image](https://github.com/user-attachments/assets/fabb747b-56a0-4c1a-821b-ea9311202993)
+## Run
 
-## How to Run
-
-To get MeesBaaS up and running, follow these steps:
 ### Prerequisites
 
-Before running the application, ensure you have the following installed:
-- [Docker](https://www.docker.com/get-started)
-- [Docker Compose](https://docs.docker.com/compose/install/)
-- Gradle
+- Docker
+- Docker Compose
 - JDK 21
-  
-### 1. Clone the Repository
 
-First, clone the GoLoad repository to your local machine:
-```
-git clone https://github.com/Khanh-21522203/MessBaaS
-cd goLoad
-```
-### 2. Docker Setup
-Run the application using Docker Compose. This will start the necessary services like MySQL, Kafka, Redis, and GoLoad:
-```
+### 1. Start MySQL
+
+```bash
 docker-compose up -d
 ```
-### 3. Run the application
+
+### 2. Run the server
+
+```bash
+bash ./gradlew run
 ```
-./gradlew bootRun
-```
+
+### 3. WebSocket endpoint
+
+- Native WebSocket endpoint: `/ws/channels?channelId={channelId}`
+- Outbound payload: JSON `MessageEvent`
+
+### 4. Hot buffer tuning
+
+- `message.hotBufferPerChannel` controls how many recent messages are retained in memory per channel.
+- Recent history requests are served from memory first and fall back to MySQL when the requested window is older than the hot buffer.

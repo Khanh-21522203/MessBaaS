@@ -1,50 +1,47 @@
 package com.java_mess.java_mess.config;
 
-// import org.springframework.boot.autoconfigure.web.servlet.WebMvcRegistrations;
-import org.springframework.boot.web.servlet.FilterRegistrationBean;
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.core.RedisTemplate;
-import org.springframework.lang.NonNull;
-import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
-import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
+import java.util.Properties;
 
-import com.java_mess.java_mess.common.AuthenticationFilter;
-import com.java_mess.java_mess.common.LatencyInterceptor;
-import com.java_mess.java_mess.common.RateLimiterFilter;
-import com.java_mess.java_mess.service.AppService;
+import lombok.Builder;
+import lombok.Value;
 
-@Configuration
-public class AppConfig implements WebMvcConfigurer{
-    // @Bean
-    // ObjectMapper objectMapper() {
-    //   ObjectMapper mapper = new ObjectMapper();
-    //   return mapper;
-    // }
-    @Override
-    public void addInterceptors(@NonNull InterceptorRegistry registry) {
-        registry.addInterceptor(new LatencyInterceptor());
+@Value
+@Builder
+public class AppConfig {
+    int port;
+    int bossThreads;
+    int workerThreads;
+    int businessThreads;
+    String dbUrl;
+    String dbUsername;
+    String dbPassword;
+    String dbDriverClassName;
+    int hotBufferPerChannel;
+
+    public static AppConfig from(Properties properties) {
+        return AppConfig.builder()
+            .port(intProperty(properties, "server.port", 8082))
+            .bossThreads(intProperty(properties, "server.bossThreads", 1))
+            .workerThreads(intProperty(properties, "server.workerThreads", 0))
+            .businessThreads(intProperty(properties, "server.businessThreads", 0))
+            .dbUrl(requiredProperty(properties, "db.url"))
+            .dbUsername(requiredProperty(properties, "db.username"))
+            .dbPassword(requiredProperty(properties, "db.password"))
+            .dbDriverClassName(requiredProperty(properties, "db.driverClassName"))
+            .hotBufferPerChannel(intProperty(properties, "message.hotBufferPerChannel", 2048))
+            .build();
     }
 
-    @Bean
-    public FilterRegistrationBean<AuthenticationFilter> authenticationFilter(AppService appService) {
-        FilterRegistrationBean<AuthenticationFilter> registrationBean = new FilterRegistrationBean<>();
-
-        registrationBean.setFilter(new AuthenticationFilter(appService));
-        registrationBean.addUrlPatterns("/api/*");
-        registrationBean.setOrder(1);
-
-        return registrationBean;
+    private static int intProperty(Properties properties, String key, int defaultValue) {
+        String value = properties.getProperty(key);
+        return value == null || value.isBlank() ? defaultValue : Integer.parseInt(value.trim());
     }
 
-    @Bean
-    public FilterRegistrationBean<RateLimiterFilter> rateLimiterFilter(RedisTemplate<String, String> redisTemplate) {
-        FilterRegistrationBean<RateLimiterFilter> registrationBean = new FilterRegistrationBean<>();
-
-        registrationBean.setFilter(new RateLimiterFilter(redisTemplate));
-        registrationBean.addUrlPatterns("/api/*");
-        registrationBean.setOrder(2);
-
-        return registrationBean;
+    private static String requiredProperty(Properties properties, String key) {
+        String value = properties.getProperty(key);
+        if (value == null || value.isBlank()) {
+            throw new IllegalStateException("Missing required config: " + key);
+        }
+        return value.trim();
     }
 }

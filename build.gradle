@@ -1,27 +1,14 @@
-buildscript {
-    //...
-    repositories {
-        mavenCentral()
-    }
-    dependencies {
-		classpath 'org.flywaydb:flyway-mysql:9.8.3'
-        classpath 'org.mariadb.jdbc:mariadb-java-client:3.0.6'
-    }
-}
 plugins {
 	id 'java'
-	id 'org.springframework.boot' version '3.4.2'
-	id 'io.spring.dependency-management' version '1.1.7'
-	id 'org.flywaydb.flyway' version '9.19.4'
+	id 'application'
 }
 
-group = 'com.java_mess'
+group = 'com.messbaas'
 version = '0.0.1-SNAPSHOT'
 
 java {
-	toolchain {
-		languageVersion = JavaLanguageVersion.of(21)
-	}
+	sourceCompatibility = JavaVersion.VERSION_21
+	targetCompatibility = JavaVersion.VERSION_21
 }
 
 configurations {
@@ -35,32 +22,25 @@ repositories {
 }
 
 dependencies {
-	implementation 'org.springframework.boot:spring-boot-starter-actuator'
-	implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.2.0'
+	implementation 'io.netty:netty-all:4.1.108.Final'
+	implementation 'com.fasterxml.jackson.core:jackson-databind:2.17.2'
+	implementation 'com.fasterxml.jackson.datatype:jackson-datatype-jsr310:2.17.2'
+	implementation 'com.zaxxer:HikariCP:5.1.0'
+	implementation 'org.flywaydb:flyway-core:9.19.4'
+	implementation 'org.flywaydb:flyway-mysql:9.19.4'
+	implementation 'org.slf4j:slf4j-api:2.0.13'
+	runtimeOnly 'ch.qos.logback:logback-classic:1.5.6'
 	runtimeOnly 'com.mysql:mysql-connector-j:8.3.0'
-	implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
-	implementation 'org.springframework.boot:spring-boot-starter-web'
-	implementation 'org.springframework.boot:spring-boot-starter-validation'
-	implementation 'org.springframework.boot:spring-boot-starter-data-redis:3.2.0'
-	implementation 'org.flywaydb:flyway-core'
-	implementation 'org.flywaydb:flyway-mysql'
-	implementation 'org.springframework.boot:spring-boot-starter-websocket'
-	implementation 'org.springframework.kafka:spring-kafka'
 
-	compileOnly 'org.projectlombok:lombok'
-	annotationProcessor 'org.projectlombok:lombok'
-	testImplementation 'org.springframework.boot:spring-boot-starter-test'
-	testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
-}
-
-
-flyway {
-    url = 'jdbc:mysql://localhost:3306/mess_baas'
-    user = 'root'
-    password = 'mysql'
-    locations = ['classpath:db/migration']
+	compileOnly 'org.projectlombok:lombok:1.18.34'
+	annotationProcessor 'org.projectlombok:lombok:1.18.34'
+	testImplementation 'org.junit.jupiter:junit-jupiter:5.10.2'
 }
 
 tasks.named('test') {
 	useJUnitPlatform()
+}
+
+application {
+	mainClass = 'com.java_mess.java_mess.MessBaaSServer'
 }
