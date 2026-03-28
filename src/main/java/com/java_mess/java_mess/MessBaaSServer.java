@@ -59,7 +59,11 @@ public class MessBaaSServer {
         ApiRouter apiRouter = new ApiRouter(objectMapper, userService, channelService, messageService);
         HttpApiHandler httpApiHandler = new HttpApiHandler(apiRouter);
         WebSocketHandshakeHandler webSocketHandshakeHandler = new WebSocketHandshakeHandler();
-        ChannelWebSocketFrameHandler webSocketFrameHandler = new ChannelWebSocketFrameHandler(channelWebSocketRegistry);
+        ChannelWebSocketFrameHandler webSocketFrameHandler = new ChannelWebSocketFrameHandler(
+            channelWebSocketRegistry,
+            messageService,
+            objectMapper
+        );
 
         NettyServer nettyServer = new NettyServer(config, httpApiHandler, webSocketHandshakeHandler, webSocketFrameHandler);
 

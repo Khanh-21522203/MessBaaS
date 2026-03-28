@@ -52,7 +52,7 @@ public class NettyServer {
                         channel.pipeline().addLast(businessGroup, httpApiHandler);
                         channel.pipeline().addLast(webSocketHandshakeHandler);
                         channel.pipeline().addLast(new WebSocketServerProtocolHandler("/ws/channels", null, true));
-                        channel.pipeline().addLast(channelWebSocketFrameHandler);
+                        channel.pipeline().addLast(businessGroup, channelWebSocketFrameHandler);
                     }
                 });
 

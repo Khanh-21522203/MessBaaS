@@ -1,5 +1,15 @@
 package com.java_mess.java_mess.websocket;
 
+import java.util.Map;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.java_mess.java_mess.dto.message.SendMessageRequest;
+import com.java_mess.java_mess.http.RequestValidator;
+import com.java_mess.java_mess.model.Message;
+import com.java_mess.java_mess.service.MessageService;
+
 import io.netty.channel.ChannelHandler.Sharable;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -17,6 +27,8 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ChannelWebSocketFrameHandler extends SimpleChannelInboundHandler<WebSocketFrame> {
     private final ChannelWebSocketRegistry channelWebSocketRegistry;
+    private final MessageService messageService;
+    private final ObjectMapper objectMapper;
 
     @Override
     public void userEventTriggered(ChannelHandlerContext ctx, Object evt) throws Exception {
@@ -43,7 +55,56 @@ public class ChannelWebSocketFrameHandler extends SimpleChannelInboundHandler<We
             return;
         }
         if (frame instanceof TextWebSocketFrame textFrame) {
-            log.debug("Ignoring inbound websocket payload remote={} payload={}", ctx.channel().remoteAddress(), textFrame.text());
+            handleTextFrame(ctx, textFrame.text());
+        }
+    }
+
+    private void handleTextFrame(ChannelHandlerContext ctx, String payload) {
+        String channelId = ctx.channel().attr(ChannelWebSocketRegistry.CHANNEL_ID_ATTRIBUTE).get();
+        if (channelId == null || channelId.isBlank()) {
+            writeError(ctx, "channelId is required");
+            return;
+        }
+
+        try {
+            SendMessageRequest request = parseRequest(payload);
+            RequestValidator.requireNonBlank(request.getClientUserId(), "clientUserId");
+            RequestValidator.requireNonBlank(request.getMessage(), "message");
+            RequestValidator.requireNonBlank(request.getImgUrl(), "imgUrl");
+
+            Message storedMessage = messageService.sendMessage(channelId, request);
+            log.debug("Accepted websocket message channelId={} messageId={}", channelId, storedMessage.getId());
+        } catch (IllegalArgumentException | JsonProcessingException exception) {
+            writeError(ctx, exception.getMessage() == null ? "Invalid websocket payload" : exception.getMessage());
+        } catch (Exception exception) {
+            log.warn("Failed to process websocket message remote={}", ctx.channel().remoteAddress(), exception);
+            writeError(ctx, "Failed to process websocket message");
+        }
+    }
+
+    private SendMessageRequest parseRequest(String payload) throws JsonProcessingException {
+        JsonNode root = objectMapper.readTree(payload);
+        return SendMessageRequest.builder()
+            .clientUserId(stringValue(root, "clientUserId"))
+            .message(stringValue(root, "message"))
+            .imgUrl(stringValue(root, "imgUrl"))
+            .build();
+    }
+
+    private String stringValue(JsonNode root, String fieldName) {
+        JsonNode field = root.get(fieldName);
+        if (field == null || field.isNull()) {
+            return null;
+        }
+        return field.asText();
+    }
+
+    private void writeError(ChannelHandlerContext ctx, String error) {
+        try {
+            String json = objectMapper.writeValueAsString(Map.of("error", error));
+            ctx.writeAndFlush(new TextWebSocketFrame(json));
+        } catch (JsonProcessingException exception) {
+            ctx.writeAndFlush(new TextWebSocketFrame("{\"error\":\"Failed to serialize websocket error\"}"));
         }
     }
 
