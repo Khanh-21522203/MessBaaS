@@ -1,6 +1,7 @@
 package com.java_mess.java_mess.service;
 
 import java.time.Instant;
+import java.util.List;
 
 import com.java_mess.java_mess.dto.channel.CreateChannelRequest;
 import com.java_mess.java_mess.exception.ChannelExistedException;
@@ -42,5 +43,10 @@ public class ChannelServiceImpl implements ChannelService {
     @Override
     public Channel getChannelById(String id) {
         return channelRepository.findById(id).orElseThrow(ChannelNotFoundException::new);
+    }
+
+    @Override
+    public List<Channel> listChannels(Instant beforeCreatedAt, int limit) {
+        return channelRepository.listChannels(beforeCreatedAt, limit);
     }
 }

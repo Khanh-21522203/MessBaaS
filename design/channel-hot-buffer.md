@@ -71,7 +71,9 @@ Maintain a bounded in-memory recent-message buffer per channel to reduce databas
 
 ### Observability and Debugging
 
-- No direct logging/metrics in `ChannelMessageHotStore`.
+- `ChannelMessageHotStore` tracks runtime counters: `latestHit`, `beforeHit`, `afterHit`, `miss`, `eviction`, and `channelCount` via `snapshotStats()`.
+- `MessageServiceImpl` tracks read-path counters (`hotOnly`, `hotPartialWithDbFallback`, `dbOnly`) and emits periodic INFO logs every 1000 sampled read paths.
+- Runtime snapshots are exposed through `GET /api/ops/stats` from `ApiRouter`.
 - Unit tests in `src/test/java/com/java_mess/java_mess/service/ChannelMessageHotStoreTest.java` validate ordering, bounds, defensive-copy behavior, and non-positive limit handling.
 - Debug cache behavior by setting breakpoints in `ChannelBuffer.collect` and `MessageServiceImpl.latestMessages/messagesBefore/messagesAfter`.
 
@@ -79,7 +81,6 @@ Maintain a bounded in-memory recent-message buffer per channel to reduce databas
 
 - Memory usage scales with number of active channels * `perChannelLimit`.
 - Cache is not TTL-based; eviction is strictly size-based.
-- No observability for hit/miss ratio, making tuning empirical.
+- Counters are process-local and reset on restart.
 
 Changes:
-

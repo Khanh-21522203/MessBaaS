@@ -11,6 +11,7 @@ import java.util.UUID;
 
 import javax.sql.DataSource;
 
+import com.java_mess.java_mess.exception.ClientUserIdExistedException;
 import com.java_mess.java_mess.model.User;
 
 import lombok.RequiredArgsConstructor;
@@ -57,6 +58,9 @@ public class UserRepository {
             statement.setTimestamp(5, Timestamp.from(createdAt));
             statement.executeUpdate();
         } catch (SQLException exception) {
+            if (isDuplicateKey(exception)) {
+                throw new ClientUserIdExistedException();
+            }
             throw new IllegalStateException("Failed to save user", exception);
         }
 
@@ -74,5 +78,10 @@ public class UserRepository {
             .profileImgUrl(resultSet.getString("profileImgUrl"))
             .createdAt(createdAt != null ? createdAt.toInstant() : null)
             .build();
+    }
+
+    private boolean isDuplicateKey(SQLException exception) {
+        String sqlState = exception.getSQLState();
+        return (sqlState != null && sqlState.startsWith("23")) || exception.getErrorCode() == 1062;
     }
 }

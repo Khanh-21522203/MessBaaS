@@ -10,4 +10,6 @@ public interface MessageService {
     Message sendMessage(String channelId, SendMessageRequest request);
 
     List<Message> listMessages(ListMessageRequest request);
+
+    MessageRuntimeStats runtimeStats();
 }

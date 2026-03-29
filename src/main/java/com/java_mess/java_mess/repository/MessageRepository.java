@@ -9,9 +9,12 @@ import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Objects;
+import java.util.Optional;
 
 import javax.sql.DataSource;
 
+import com.java_mess.java_mess.exception.ClientMessageConflictException;
 import com.java_mess.java_mess.model.Channel;
 import com.java_mess.java_mess.model.Message;
 import com.java_mess.java_mess.model.User;
@@ -24,6 +27,7 @@ public class MessageRepository {
         select
             m.id as message_id,
             m.channelId as message_channelId,
+            m.clientMessageId as message_clientMessageId,
             m.message as message_body,
             m.imgUrl as message_imgUrl,
             m.isDeleted as message_isDeleted,
@@ -45,8 +49,8 @@ public class MessageRepository {
         Instant updatedAt = message.getUpdatedAt() != null ? message.getUpdatedAt() : createdAt;
 
         String sql = """
-            insert into message (channelId, userId, message, imgUrl, isDeleted, createdAt, updatedAt)
-            values (?, ?, ?, ?, ?, ?, ?)
+            insert into message (channelId, userId, clientMessageId, message, imgUrl, isDeleted, createdAt, updatedAt)
+            values (?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
         try (
@@ -55,11 +59,12 @@ public class MessageRepository {
         ) {
             statement.setString(1, message.getChannel().getId());
             statement.setString(2, message.getUser().getId());
-            statement.setString(3, message.getMessage());
-            statement.setString(4, message.getImgUrl());
-            statement.setBoolean(5, Boolean.TRUE.equals(message.getIsDeleted()));
-            statement.setTimestamp(6, Timestamp.from(createdAt));
-            statement.setTimestamp(7, Timestamp.from(updatedAt));
+            statement.setString(3, message.getClientMessageId());
+            statement.setString(4, message.getMessage());
+            statement.setString(5, message.getImgUrl());
+            statement.setBoolean(6, Boolean.TRUE.equals(message.getIsDeleted()));
+            statement.setTimestamp(7, Timestamp.from(createdAt));
+            statement.setTimestamp(8, Timestamp.from(updatedAt));
             statement.executeUpdate();
             try (ResultSet generatedKeys = statement.getGeneratedKeys()) {
                 if (!generatedKeys.next()) {
@@ -68,12 +73,43 @@ public class MessageRepository {
                 message.setId(generatedKeys.getLong(1));
             }
         } catch (SQLException exception) {
+            if (isDuplicateKey(exception)) {
+                Optional<Message> existing = findByChannelIdAndClientMessageId(
+                    message.getChannel().getId(),
+                    message.getClientMessageId()
+                );
+                if (existing.isPresent()) {
+                    if (!samePayload(existing.get(), message)) {
+                        throw new ClientMessageConflictException();
+                    }
+                    return existing.get();
+                }
+            }
             throw new IllegalStateException("Failed to save message", exception);
         }
 
         message.setCreatedAt(createdAt);
         message.setUpdatedAt(updatedAt);
         return message;
+    }
+
+    public Optional<Message> findByChannelIdAndClientMessageId(String channelId, String clientMessageId) {
+        String sql = MESSAGE_SELECT + " where m.channelId = ? and m.clientMessageId = ? limit 1";
+        try (
+            Connection connection = dataSource.getConnection();
+            PreparedStatement statement = connection.prepareStatement(sql)
+        ) {
+            statement.setString(1, channelId);
+            statement.setString(2, clientMessageId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                if (!resultSet.next()) {
+                    return Optional.empty();
+                }
+                return Optional.of(mapMessage(resultSet));
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Failed to load message by clientMessageId", exception);
+        }
     }
 
     public List<Message> findLatestMessages(String channelId, int limit) {
@@ -141,12 +177,26 @@ public class MessageRepository {
             .id(resultSet.getLong("message_id"))
             .channel(channel)
             .user(user)
+            .clientMessageId(resultSet.getString("message_clientMessageId"))
             .message(resultSet.getString("message_body"))
             .imgUrl(resultSet.getString("message_imgUrl"))
             .isDeleted(resultSet.getBoolean("message_isDeleted"))
             .createdAt(messageCreatedAt != null ? messageCreatedAt.toInstant() : null)
             .updatedAt(messageUpdatedAt != null ? messageUpdatedAt.toInstant() : null)
             .build();
+    }
+
+    private boolean isDuplicateKey(SQLException exception) {
+        String sqlState = exception.getSQLState();
+        return (sqlState != null && sqlState.startsWith("23")) || exception.getErrorCode() == 1062;
+    }
+
+    private boolean samePayload(Message existing, Message incoming) {
+        String existingUserId = existing.getUser() == null ? null : existing.getUser().getId();
+        String incomingUserId = incoming.getUser() == null ? null : incoming.getUser().getId();
+        return Objects.equals(existingUserId, incomingUserId)
+            && Objects.equals(existing.getMessage(), incoming.getMessage())
+            && Objects.equals(existing.getImgUrl(), incoming.getImgUrl());
     }
 
     @FunctionalInterface

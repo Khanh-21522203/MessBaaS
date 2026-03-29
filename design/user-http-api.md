@@ -68,7 +68,7 @@ Create users and fetch users by external client identifier through Netty HTTP ro
 
 - Empty request body: `ApiRouter.readBody` throws `IllegalArgumentException("Request body is required")` -> `400`.
 - Missing/blank required fields: `RequestValidator` throws `IllegalArgumentException("<field> is required")` -> `400`.
-- Duplicate `clientUserId`: `ClientUserIdExistedException` -> `409`.
+- Duplicate `clientUserId` (including concurrent insert races): `ClientUserIdExistedException` -> `409`.
 - Unknown user on GET: `UserNotFoundException` -> `404`.
 - SQL exception in repository is wrapped as `IllegalStateException` -> `500`.
 
@@ -85,4 +85,3 @@ Create users and fetch users by external client identifier through Netty HTTP ro
 - Validation requires `profileImgUrl`, so text-only profiles are not accepted.
 
 Changes:
-

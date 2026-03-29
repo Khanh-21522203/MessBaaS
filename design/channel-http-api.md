@@ -8,6 +8,7 @@ Create chat channels and resolve channel records by client reference ID or canon
 
 **In scope:**
 - `POST /api/channels` channel creation.
+- `GET /api/channels` channel discovery with cursor-style pagination params.
 - `GET /api/channels/{clientReferenceId}/by-reference-id` channel lookup by external ID.
 - `GET /api/channels/{channelId}` channel lookup by persisted channel UUID.
 
@@ -22,6 +23,7 @@ Create chat channels and resolve channel records by client reference ID or canon
 2. Service rejects duplicate `clientReferenceId` values.
 3. Service persists channel and returns UUID-backed channel object.
 4. Client resolves channel either by external `clientReferenceId` or by channel UUID.
+5. Client can bootstrap available channels with `GET /api/channels?limit=&beforeCreatedAt=`.
 
 ### System Flow
 
@@ -29,9 +31,10 @@ Create chat channels and resolve channel records by client reference ID or canon
 2. `ApiRouter.createChannel` parses `CreateChannelRequest`, validates required fields.
 3. `ChannelServiceImpl.createChannel` checks duplicate via `ChannelRepository.findByClientReferenceId`.
 4. `ChannelServiceImpl` builds `Channel(createdAt=Instant.now())` and saves via `ChannelRepository.save`.
-5. GET-by-reference path uses `ChannelServiceImpl.getChannelByReferenceId`.
-6. GET-by-id path uses `ChannelServiceImpl.getChannelById`.
-7. `ApiRouter` serializes `CreateChannelResponse` / `GetChannelResponse`.
+5. Channel discovery path uses `ChannelServiceImpl.listChannels` backed by `ChannelRepository.listChannels`.
+6. GET-by-reference path uses `ChannelServiceImpl.getChannelByReferenceId`.
+7. GET-by-id path uses `ChannelServiceImpl.getChannelById`.
+8. `ApiRouter` serializes `CreateChannelResponse` / `GetChannelResponse` / `ListChannelResponse`.
 
 ### Data Model
 
@@ -56,6 +59,9 @@ Create chat channels and resolve channel records by client reference ID or canon
 - `GET /api/channels/{channelId}`
 - Success: `200` with `{"channel":{...}}`
 - Errors: `404` if not found.
+- `GET /api/channels?limit=<int>&beforeCreatedAt=<iso-8601>`
+- Success: `200` with `{"channels":[...]}` ordered by `createdAt desc`.
+- Errors: `400` invalid `limit` or invalid `beforeCreatedAt`.
 
 ### Dependencies
 
@@ -69,7 +75,7 @@ Create chat channels and resolve channel records by client reference ID or canon
 ### Failure Modes and Edge Cases
 
 - Blank `name` or `clientReferenceId`: `400` from `RequestValidator`.
-- Duplicate channel reference: `ChannelExistedException` -> `409`.
+- Duplicate channel reference (including concurrent insert race): `ChannelExistedException` -> `409`.
 - Missing channel on either GET route: `ChannelNotFoundException` -> `404`.
 - Repository SQL errors surface as `IllegalStateException` -> `500`.
 
@@ -83,7 +89,6 @@ Create chat channels and resolve channel records by client reference ID or canon
 
 - No auth or tenant partitioning; all callers see the same channel namespace.
 - Duplicate prevention is done in both service pre-check and DB unique key; concurrent create races rely on DB constraint.
-- API does not expose list/search channels.
+- Discovery endpoint is global (no auth/tenant partitioning).
 
 Changes:
-

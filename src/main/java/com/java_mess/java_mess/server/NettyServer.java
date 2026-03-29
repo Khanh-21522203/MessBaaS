@@ -50,7 +50,7 @@ public class NettyServer {
                         channel.pipeline().addLast(new HttpObjectAggregator(1024 * 1024));
                         channel.pipeline().addLast(new ChunkedWriteHandler());
                         channel.pipeline().addLast(businessGroup, httpApiHandler);
-                        channel.pipeline().addLast(webSocketHandshakeHandler);
+                        channel.pipeline().addLast(businessGroup, webSocketHandshakeHandler);
                         channel.pipeline().addLast(new WebSocketServerProtocolHandler("/ws/channels", null, true));
                         channel.pipeline().addLast(businessGroup, channelWebSocketFrameHandler);
                     }

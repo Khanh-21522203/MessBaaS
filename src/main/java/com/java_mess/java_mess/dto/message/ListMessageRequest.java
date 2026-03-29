@@ -7,6 +7,7 @@ import lombok.Data;
 @Builder
 public class ListMessageRequest {
     private String channelId;
+    private String clientUserId;
     private long pivotId;
     private int prevLimit;
     private int nextLimit;

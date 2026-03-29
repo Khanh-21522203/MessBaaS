@@ -6,6 +6,7 @@ import java.util.NavigableMap;
 import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.java_mess.java_mess.model.Channel;
 import com.java_mess.java_mess.model.Message;
@@ -14,6 +15,11 @@ import com.java_mess.java_mess.model.User;
 public class ChannelMessageHotStore {
     private final int perChannelLimit;
     private final ConcurrentMap<String, ChannelBuffer> channels = new ConcurrentHashMap<>();
+    private final AtomicLong latestHit = new AtomicLong();
+    private final AtomicLong beforeHit = new AtomicLong();
+    private final AtomicLong afterHit = new AtomicLong();
+    private final AtomicLong miss = new AtomicLong();
+    private final AtomicLong eviction = new AtomicLong();
 
     public ChannelMessageHotStore(int perChannelLimit) {
         if (perChannelLimit <= 0) {
@@ -35,7 +41,17 @@ public class ChannelMessageHotStore {
             return List.of();
         }
         ChannelBuffer buffer = channels.get(channelId);
-        return buffer == null ? List.of() : buffer.latest(limit);
+        if (buffer == null) {
+            miss.incrementAndGet();
+            return List.of();
+        }
+        List<Message> result = buffer.latest(limit);
+        if (result.isEmpty()) {
+            miss.incrementAndGet();
+        } else {
+            latestHit.incrementAndGet();
+        }
+        return result;
     }
 
     public List<Message> before(String channelId, long pivotId, int limit) {
@@ -43,7 +59,17 @@ public class ChannelMessageHotStore {
             return List.of();
         }
         ChannelBuffer buffer = channels.get(channelId);
-        return buffer == null ? List.of() : buffer.before(pivotId, limit);
+        if (buffer == null) {
+            miss.incrementAndGet();
+            return List.of();
+        }
+        List<Message> result = buffer.before(pivotId, limit);
+        if (result.isEmpty()) {
+            miss.incrementAndGet();
+        } else {
+            beforeHit.incrementAndGet();
+        }
+        return result;
     }
 
     public List<Message> after(String channelId, long pivotId, int limit) {
@@ -51,7 +77,28 @@ public class ChannelMessageHotStore {
             return List.of();
         }
         ChannelBuffer buffer = channels.get(channelId);
-        return buffer == null ? List.of() : buffer.after(pivotId, limit);
+        if (buffer == null) {
+            miss.incrementAndGet();
+            return List.of();
+        }
+        List<Message> result = buffer.after(pivotId, limit);
+        if (result.isEmpty()) {
+            miss.incrementAndGet();
+        } else {
+            afterHit.incrementAndGet();
+        }
+        return result;
+    }
+
+    public ChannelHotStoreStats snapshotStats() {
+        return ChannelHotStoreStats.builder()
+            .latestHit(latestHit.get())
+            .beforeHit(beforeHit.get())
+            .afterHit(afterHit.get())
+            .miss(miss.get())
+            .eviction(eviction.get())
+            .channelCount(channels.size())
+            .build();
     }
 
     private Message copy(Message message) {
@@ -74,6 +121,7 @@ public class ChannelMessageHotStore {
             .id(message.getId())
             .channel(channel)
             .user(user)
+            .clientMessageId(message.getClientMessageId())
             .message(message.getMessage())
             .imgUrl(message.getImgUrl())
             .isDeleted(message.getIsDeleted())
@@ -94,6 +142,7 @@ public class ChannelMessageHotStore {
             messages.put(message.getId(), message);
             while (messages.size() > limit) {
                 messages.pollFirstEntry();
+                eviction.incrementAndGet();
             }
         }
 

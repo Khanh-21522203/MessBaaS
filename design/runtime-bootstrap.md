@@ -12,6 +12,7 @@ Boot the MessBaaS process, load runtime configuration, initialize database acces
 - Run Flyway migrations before serving traffic.
 - Construct repositories, services, HTTP router/handler, WebSocket handlers, and `NettyServer`.
 - Configure Netty boss/worker/business thread groups and HTTP/WebSocket pipeline.
+- Define local runtime bootstrap contract through `build.gradle` (`application.mainClass`) and `docker-compose.yaml` MySQL service bootstrap.
 
 **Out of scope:**
 - Endpoint-specific request validation and response mapping.
@@ -20,10 +21,11 @@ Boot the MessBaaS process, load runtime configuration, initialize database acces
 
 ### Primary User Flow
 
-1. Operator runs `./gradlew run` (main class `com.java_mess.java_mess.MessBaaSServer`).
-2. Server reads static config from `src/main/resources/application.properties`.
-3. Process creates DB pool, applies Flyway migrations, wires app components.
-4. Netty binds to configured `server.port` and accepts HTTP + WebSocket connections.
+1. Operator starts local MySQL with `docker-compose.yaml` (database name seeded by `docker/mysql/init.sql`).
+2. Operator runs `./gradlew run` (main class `com.java_mess.java_mess.MessBaaSServer` from `build.gradle`).
+3. Server reads static config from `src/main/resources/application.properties`.
+4. Process creates DB pool, applies Flyway migrations, wires app components.
+5. Netty binds to configured `server.port` and accepts HTTP + WebSocket connections.
 
 ### System Flow
 
@@ -31,9 +33,10 @@ Boot the MessBaaS process, load runtime configuration, initialize database acces
 2. `AppConfigLoader.load` reads `application.properties` and calls `AppConfig.from`.
 3. `createDataSource` builds `HikariConfig` (`db.url`, `db.username`, `db.password`, `db.driverClassName`) and returns `HikariDataSource`. Pool sizing is derived from business thread count: `maximumPoolSize = resolveBusinessThreads * 2`, `minimumIdle = max(2, resolveBusinessThreads)`, `autoCommit = true`.
 4. `runMigrations` executes `Flyway.configure().dataSource(...).migrate()`.
-5. Main wires repositories (`UserRepository`, `ChannelRepository`, `MessageRepository`), services, router/handlers, then constructs `NettyServer`.
-6. `NettyServer.start` configures pipeline: `HttpServerCodec` -> `HttpObjectAggregator` -> `ChunkedWriteHandler` -> `HttpApiHandler` -> `WebSocketHandshakeHandler` -> `WebSocketServerProtocolHandler("/ws/channels")` -> `ChannelWebSocketFrameHandler`.
-7. Shutdown hook closes datasource when JVM exits.
+5. Main wires repositories (`UserRepository`, `ChannelRepository`, `MessageRepository`, `ChannelMemberRepository`, `UserReadMessageRepository`), services, router/handlers, then constructs `NettyServer`.
+6. `NettyServer.start` configures pipeline: `HttpServerCodec` -> `HttpObjectAggregator` -> `ChunkedWriteHandler` -> `HttpApiHandler` (business group) -> `WebSocketHandshakeHandler` (business group) -> `WebSocketServerProtocolHandler("/ws/channels")` -> `ChannelWebSocketFrameHandler` (business group).
+7. `build.gradle` `application.mainClass` binds process launch to `MessBaaSServer` for `./gradlew run`.
+8. Shutdown hook closes datasource when JVM exits.
 
 ```
 Process start
@@ -69,6 +72,7 @@ Process start
 - `config/AppConfig*` for configuration loading and validation.
 - `http/*` and `websocket/*` handlers for transport behavior.
 - `repository/*` and `service/*` for business + persistence wiring.
+- Root runtime config files: `build.gradle`, `settings.gradle`, `docker-compose.yaml`, `docker/mysql/init.sql`.
 
 **External services/libraries:**
 - HikariCP (`com.zaxxer.hikari`) for JDBC connection pooling.
@@ -87,13 +91,12 @@ Process start
 
 - Startup log at `NettyServer.start`: `Starting Netty server port=... workerThreads=... businessThreads=...`.
 - Shutdown log at JVM hook in `MessBaaSServer`: `Shutting down MessBaaS`.
-- No startup health endpoint; debugging starts at exceptions thrown from `MessBaaSServer.main`.
+- Operational probes are available from startup: `GET /healthz`, `GET /readyz`, plus `/health/live` and `/health/ready`.
 
 ### Risks and Notes
 
-- No explicit readiness/liveness probes in-process.
 - Startup is all-or-nothing; partial initialization is not supported.
 - Thread counts are runtime-derived when config is zero, which can vary across hosts.
+- `docker/mysql/init.sql` only creates the database; schema creation still depends on Flyway execution during app startup.
 
 Changes:
-

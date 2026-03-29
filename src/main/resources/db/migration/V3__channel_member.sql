@@ -1,0 +1,10 @@
+CREATE TABLE channelMember (
+    id VARCHAR(36) PRIMARY KEY,
+    channelId VARCHAR(36) NOT NULL,
+    userId VARCHAR(36) NOT NULL,
+    createdAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updatedAt TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    CONSTRAINT fk_channelMember_channel FOREIGN KEY (channelId) REFERENCES channel(id) ON DELETE CASCADE,
+    CONSTRAINT fk_channelMember_user FOREIGN KEY (userId) REFERENCES user(id) ON DELETE CASCADE,
+    CONSTRAINT unique_channel_member UNIQUE (channelId, userId)
+);

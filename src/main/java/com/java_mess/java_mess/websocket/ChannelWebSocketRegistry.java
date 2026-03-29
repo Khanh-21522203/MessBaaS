@@ -20,18 +20,21 @@ import lombok.extern.slf4j.Slf4j;
 @Slf4j
 public class ChannelWebSocketRegistry {
     public static final AttributeKey<String> CHANNEL_ID_ATTRIBUTE = AttributeKey.valueOf("channelId");
+    public static final AttributeKey<String> CLIENT_USER_ID_ATTRIBUTE = AttributeKey.valueOf("clientUserId");
 
     private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, ChannelGroup> channels = new ConcurrentHashMap<>();
 
-    public void register(String channelId, Channel channel) {
+    public void register(String channelId, String clientUserId, Channel channel) {
         channel.attr(CHANNEL_ID_ATTRIBUTE).set(channelId);
+        channel.attr(CLIENT_USER_ID_ATTRIBUTE).set(clientUserId);
         channels.computeIfAbsent(channelId, ignored -> new DefaultChannelGroup(GlobalEventExecutor.INSTANCE)).add(channel);
-        log.info("Registered websocket channelId={} remote={}", channelId, channel.remoteAddress());
+        log.info("Registered websocket channelId={} clientUserId={} remote={}", channelId, clientUserId, channel.remoteAddress());
     }
 
     public void unregister(Channel channel) {
         String channelId = channel.attr(CHANNEL_ID_ATTRIBUTE).getAndSet(null);
+        String clientUserId = channel.attr(CLIENT_USER_ID_ATTRIBUTE).getAndSet(null);
         if (channelId == null) {
             return;
         }
@@ -42,22 +45,49 @@ public class ChannelWebSocketRegistry {
                 channels.remove(channelId, group);
             }
         }
-        log.info("Unregistered websocket channelId={} remote={}", channelId, channel.remoteAddress());
+        log.info("Unregistered websocket channelId={} clientUserId={} remote={}", channelId, clientUserId, channel.remoteAddress());
     }
 
     public void broadcast(MessageEvent event) {
-        ChannelGroup group = channels.get(event.getChannelId());
+        broadcast(event.getChannelId(), event);
+    }
+
+    public void broadcast(String channelId, Object event) {
+        if (channelId == null || channelId.isBlank()) {
+            return;
+        }
+        ChannelGroup group = channels.get(channelId);
         if (group == null || group.isEmpty()) {
             return;
         }
-        group.writeAndFlush(new TextWebSocketFrame(serialize(event)));
+        String payload = serialize(event);
+        if (payload == null) {
+            return;
+        }
+        group.writeAndFlush(new TextWebSocketFrame(payload));
     }
 
-    private String serialize(MessageEvent event) {
+    public WebSocketRegistryStats snapshotStats() {
+        return WebSocketRegistryStats.builder()
+            .channelCount(channels.size())
+            .activeConnectionCount(channels.values().stream().mapToInt(ChannelGroup::size).sum())
+            .build();
+    }
+
+    private String serialize(Object event) {
         try {
             return objectMapper.writeValueAsString(event);
         } catch (JsonProcessingException exception) {
-            throw new IllegalStateException("Failed to serialize websocket event", exception);
+            log.warn("Failed to serialize websocket event", exception);
+            return null;
         }
+    }
+
+    public int channelCount() {
+        return channels.size();
+    }
+
+    public int activeConnectionCount() {
+        return channels.values().stream().mapToInt(ChannelGroup::size).sum();
     }
 }

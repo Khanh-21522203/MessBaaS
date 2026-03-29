@@ -24,6 +24,8 @@ public class Message implements Serializable {
   @JsonProperty("user")
   private User user;
 
+  private String clientMessageId;
+
   private String message;
 
   private String imgUrl;

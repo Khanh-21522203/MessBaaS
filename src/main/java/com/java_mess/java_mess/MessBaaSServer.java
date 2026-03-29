@@ -8,14 +8,20 @@ import com.java_mess.java_mess.config.AppConfigLoader;
 import com.java_mess.java_mess.http.ApiRouter;
 import com.java_mess.java_mess.http.HttpApiHandler;
 import com.java_mess.java_mess.repository.ChannelRepository;
+import com.java_mess.java_mess.repository.ChannelMemberRepository;
 import com.java_mess.java_mess.repository.MessageRepository;
 import com.java_mess.java_mess.repository.UserRepository;
+import com.java_mess.java_mess.repository.UserReadMessageRepository;
 import com.java_mess.java_mess.server.NettyServer;
+import com.java_mess.java_mess.service.ChannelMembershipService;
+import com.java_mess.java_mess.service.ChannelMembershipServiceImpl;
 import com.java_mess.java_mess.service.ChannelService;
 import com.java_mess.java_mess.service.ChannelServiceImpl;
 import com.java_mess.java_mess.service.ChannelMessageHotStore;
 import com.java_mess.java_mess.service.MessageService;
 import com.java_mess.java_mess.service.MessageServiceImpl;
+import com.java_mess.java_mess.service.ReadStateService;
+import com.java_mess.java_mess.service.ReadStateServiceImpl;
 import com.java_mess.java_mess.service.UserService;
 import com.java_mess.java_mess.service.UserServiceImpl;
 import com.java_mess.java_mess.websocket.ChannelWebSocketFrameHandler;
@@ -42,23 +48,42 @@ public class MessBaaSServer {
         UserRepository userRepository = new UserRepository(dataSource);
         ChannelRepository channelRepository = new ChannelRepository(dataSource);
         MessageRepository messageRepository = new MessageRepository(dataSource);
+        ChannelMemberRepository channelMemberRepository = new ChannelMemberRepository(dataSource);
+        UserReadMessageRepository userReadMessageRepository = new UserReadMessageRepository(dataSource);
 
         ChannelWebSocketRegistry channelWebSocketRegistry = new ChannelWebSocketRegistry(objectMapper);
         ChannelMessageHotStore channelMessageHotStore = new ChannelMessageHotStore(config.getHotBufferPerChannel());
 
         UserService userService = new UserServiceImpl(userRepository);
         ChannelService channelService = new ChannelServiceImpl(channelRepository);
+        ChannelMembershipService channelMembershipService = new ChannelMembershipServiceImpl(
+            channelRepository,
+            userRepository,
+            channelMemberRepository
+        );
+        ReadStateService readStateService = new ReadStateServiceImpl(userRepository, channelRepository, userReadMessageRepository);
         MessageService messageService = new MessageServiceImpl(
             messageRepository,
             channelRepository,
             userRepository,
             channelWebSocketRegistry,
-            channelMessageHotStore
+            channelMessageHotStore,
+            channelMembershipService
         );
 
-        ApiRouter apiRouter = new ApiRouter(objectMapper, userService, channelService, messageService);
+        ApiRouter apiRouter = new ApiRouter(
+            objectMapper,
+            userService,
+            channelService,
+            channelMembershipService,
+            messageService,
+            readStateService,
+            channelWebSocketRegistry,
+            dataSource,
+            config
+        );
         HttpApiHandler httpApiHandler = new HttpApiHandler(apiRouter);
-        WebSocketHandshakeHandler webSocketHandshakeHandler = new WebSocketHandshakeHandler();
+        WebSocketHandshakeHandler webSocketHandshakeHandler = new WebSocketHandshakeHandler(channelMembershipService);
         ChannelWebSocketFrameHandler webSocketFrameHandler = new ChannelWebSocketFrameHandler(
             channelWebSocketRegistry,
             messageService,

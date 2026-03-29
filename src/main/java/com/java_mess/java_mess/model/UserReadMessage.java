@@ -2,7 +2,6 @@ package com.java_mess.java_mess.model;
 
 import java.io.Serializable;
 import java.time.Instant;
-import java.util.Date;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
 
@@ -24,7 +23,7 @@ public class UserReadMessage implements Serializable {
   @JsonProperty("user")
   private User user;
 
-  private Date lastReadMessage;
+  private Long lastReadMessageId;
 
   private Instant createdAt;
 
