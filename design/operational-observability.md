@@ -74,3 +74,10 @@ Expose minimal operational probes and runtime counters so operators can verify s
 
 Changes:
 
+> Suggested [Impact: High] [Effort: M]: Expand operational metrics to track low-latency SLOs and reliability of the async projection architecture: p95/p99 for send/history/inbox, projection lag, queue backlog, retry/DLQ counts, cache drift rate, Redis eviction impact, and reconnect-storm pressure.
+> Source: user request — design/update.md
+> Approach: extend stats surfaces in `src/main/java/com/java_mess/java_mess/http/ApiRouter.java` and service-level counters (`MessageServiceImpl`, `ChannelMessageHotStore`, websocket registry) to include latency histograms/sampled percentiles, projection-worker state, and cache health; define operator-facing thresholds and degraded-state indicators consumable by `/api/ops/stats` and readiness diagnostics.
+> Builds on: existing `/api/ops/stats` endpoint and in-memory counter pattern.
+> Constraints: performance-sensitive instrumentation must add minimal request-path overhead.
+> Edge cases: metric cardinality explosion by channel/user labels, clock skew affecting lag calculations, counter reset on restart, high-frequency reconnect bursts.
+> Risk: without robust lag/drift visibility, reliability issues may remain hidden until user-facing latency/consistency regressions occur.

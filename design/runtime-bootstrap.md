@@ -100,3 +100,11 @@ Process start
 - `docker/mysql/init.sql` only creates the database; schema creation still depends on Flyway execution during app startup.
 
 Changes:
+
+> Suggested [Impact: High] [Effort: L]: Add Redis + async projection runtime bootstrap so MessBaaS starts in MySQL-authoritative mode, enables Redis acceleration when available, and continues serving in a clearly-defined degraded mode when Redis/projector workers are unhealthy.
+> Source: user request — design/update.md
+> Approach: extend `src/main/java/com/java_mess/java_mess/config/AppConfig.java` and `src/main/java/com/java_mess/java_mess/config/AppConfigLoader.java` with Redis/worker config (`redis.*`, projection retry/backoff, inbox hot-window limits); in `src/main/java/com/java_mess/java_mess/MessBaaSServer.java` wire Redis client lifecycle, worker executors, and projection pipeline dependencies; keep `ApiRouter` readiness logic MySQL-gated while exposing Redis/worker status as degraded operational signals instead of hard startup failure.
+> Builds on: existing startup wiring in `MessBaaSServer`, current health/readiness endpoints, and existing hot-buffer configuration contract.
+> Constraints: MySQL must remain source of truth; reliability-first behavior must keep send/history available even when Redis or workers are down.
+> Edge cases: Redis unavailable at startup, Redis reconnect churn after startup, projection worker crash-loop, optional Redis config omitted.
+> Risk: if readiness semantics are ambiguous, deployments may accidentally treat Redis as mandatory and cause avoidable outages.

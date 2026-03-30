@@ -77,3 +77,10 @@ Restrict channel reads/writes/subscriptions to explicit channel members instead 
 
 Changes:
 
+> Suggested [Impact: Med] [Effort: M]: Add a Redis membership cache (`channel:{channelId}:members`) as the fast path for send/read/ws authorization checks, with DB fallback and periodic reconciliation to keep permission correctness anchored to MySQL.
+> Source: user request — design/update.md
+> Approach: keep `src/main/java/com/java_mess/java_mess/service/ChannelMembershipServiceImpl.java` as the policy boundary; add cache-backed `isMember` lookup before JDBC repository checks; on add/remove member APIs in `src/main/java/com/java_mess/java_mess/http/ApiRouter.java`, update cache write-through and schedule reconciliation worker hooks from runtime wiring.
+> Builds on: existing membership repository and enforcement points in message + websocket flows.
+> Constraints: reliability over pure speed; access control must remain correct under cache miss/stale scenarios.
+> Edge cases: stale cache after failed write-through, Redis key eviction, concurrent add/remove races, cold-start channel with no cached set.
+> Risk: incorrect cache invalidation can create false denies/allows and impact core message delivery.

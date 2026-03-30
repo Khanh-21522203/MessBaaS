@@ -117,3 +117,11 @@ Define MySQL schema and raw JDBC repositories used by services to persist and qu
 - `V4__user_read_message_id_cursor.sql` backfills legacy timestamp cursors into message IDs; channels with no prior message before a legacy cursor backfill to `0`.
 
 Changes:
+
+> Suggested [Impact: High] [Effort: L]: Add durable internal event persistence (outbox) tied to authoritative message commits so async inbox/unread/fanout projections are retryable and recoverable without data loss.
+> Source: user request — design/update.md
+> Approach: add a Flyway migration under `src/main/resources/db/migration/` for `messageOutbox` (or equivalent) with status/attempt/nextRetryAt/error columns and indexes for polling by state/time; update `src/main/java/com/java_mess/java_mess/repository/MessageRepository.java` write flow to persist outbox records atomically with message commits; add repository methods for claim/ack/retry/dead-letter transitions used by projection workers.
+> Builds on: existing MySQL/Flyway stack and idempotent message persistence contract.
+> Constraints: MySQL remains source of truth and durability anchor for all projection work.
+> Edge cases: duplicate outbox inserts on retry, stuck in-progress rows after worker crash, poison messages exceeding retry budget, backlog spikes during Redis outages.
+> Risk: non-atomic message/outbox writes create reliability gaps and break low-latency + correctness goals.

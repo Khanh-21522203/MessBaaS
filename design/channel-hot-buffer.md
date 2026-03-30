@@ -84,3 +84,11 @@ Maintain a bounded in-memory recent-message buffer per channel to reduce databas
 - Counters are process-local and reset on restart.
 
 Changes:
+
+> Suggested [Impact: High] [Effort: L]: Evolve the hot buffer from process-local only to a Redis-backed channel hot window (`channel:{channelId}:messages:hot`) with strict per-channel retention, while preserving MySQL fallback so reads remain correct when cache entries are missing or evicted.
+> Source: user request — design/update.md
+> Approach: keep `src/main/java/com/java_mess/java_mess/service/ChannelMessageHotStore.java` as an abstraction and add a Redis-backed implementation path used by `src/main/java/com/java_mess/java_mess/service/MessageServiceImpl.java`; define append/read/trim semantics equivalent to current `latest/before/after` behavior; retain DB fallback via `MessageRepository` for cache misses.
+> Builds on: existing bounded hot-buffer read path and runtime stats counters.
+> Constraints: performance-sensitive design; MySQL remains authoritative for correctness.
+> Edge cases: Redis eviction pressure removing hot windows, cross-instance cache inconsistency, out-of-order cache writes under retries, cache unavailable at read time.
+> Risk: key payload size and retention defaults can cause Redis memory pressure and destabilize latency if not bounded.

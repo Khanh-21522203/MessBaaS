@@ -121,3 +121,11 @@ Client text frame {"type":"message","payload":{clientUserId,clientMessageId,mess
 - Ephemeral `typing/presence` events are transient and not persisted.
 
 Changes:
+
+> Suggested [Impact: High] [Effort: L]: Decouple WebSocket fanout from HTTP/WS send critical path by consuming committed message events asynchronously, with retry/backoff and replay-safe deduplication so reconnect storms and transient broadcast failures do not increase send latency or lose committed events.
+> Source: user request — design/update.md
+> Approach: keep `src/main/java/com/java_mess/java_mess/websocket/ChannelWebSocketFrameHandler.java` focused on validation and message submission; move fanout trigger from synchronous direct broadcast in `src/main/java/com/java_mess/java_mess/service/MessageServiceImpl.java` to async projector/fanout worker consumption; maintain publish contract in `src/main/java/com/java_mess/java_mess/websocket/ChannelWebSocketRegistry.java` with idempotent event emission keys.
+> Builds on: existing membership-gated websocket handshake and channel registry broadcast mechanics.
+> Constraints: reliability-first operation; no message loss after successful MySQL commit; tolerate eventual fanout delay under backpressure.
+> Edge cases: reconnect storms creating burst re-subscriptions, duplicate event deliveries during retry, worker backlog growth, channel with zero active subscribers.
+> Risk: absent dedupe/replay boundaries can produce duplicate websocket events and client-side inconsistency.

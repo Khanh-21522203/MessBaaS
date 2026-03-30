@@ -83,3 +83,10 @@ Track per-user read progress per channel and expose unread counts so clients can
 
 Changes:
 
+> Suggested [Impact: High] [Effort: L]: Introduce async unread/read projection caches (`user:{userId}:reads`, `user:{userId}:unread`) updated from persisted message events so inbox/unread reads are memory-first, with periodic reconciliation against MySQL to bound drift.
+> Source: user request — design/update.md
+> Approach: keep `src/main/java/com/java_mess/java_mess/service/ReadStateServiceImpl.java` and `src/main/java/com/java_mess/java_mess/repository/UserReadMessageRepository.java` as authoritative cursor logic; add projection-worker updates keyed by user/channel/message; define reconciliation job that re-computes unread from MySQL and repairs cache drift when lag or retries occur.
+> Builds on: existing message-ID cursor semantics and unread-count query contracts.
+> Constraints: MySQL source-of-truth guarantee; performance-sensitive read path; tolerate eventual consistency in secondary cached unread views.
+> Edge cases: projector lag spikes causing temporarily stale unread counts, duplicate projection events, cache drift after worker restart, cursor updates racing with new-message projections.
+> Risk: if reconciliation cadence is too sparse, unread mismatch can persist long enough to break user trust.

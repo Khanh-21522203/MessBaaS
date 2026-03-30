@@ -119,3 +119,19 @@ GET /api/messages/{channelId}?pivotId=&prevLimit=&nextLimit=
 - No pagination cursors besides numeric message ID pivot.
 
 Changes:
+
+> Suggested [Impact: High] [Effort: L]: Redefine `POST /api/messages/{channelId}` as MySQL-commit-first, async-projection-second: return success once `MessageRepository` has authoritatively persisted/idempotently resolved the message, then enqueue projection/fanout work without adding queue/projector latency to the request critical path.
+> Source: user request — design/update.md
+> Approach: update `src/main/java/com/java_mess/java_mess/service/MessageServiceImpl.java` send flow to write an internal projection event after DB commit; keep HTTP validation/status mapping in `src/main/java/com/java_mess/java_mess/http/ApiRouter.java`; extend contracts around idempotent send + post-commit event enqueue so projector failures trigger async retry instead of request failure.
+> Builds on: current idempotent `MessageRepository.save`, membership gating, and existing send response contract.
+> Constraints: MySQL is authoritative; request-time reliability must not depend on Redis/projector availability.
+> Edge cases: duplicate `clientMessageId` retries, enqueue failure after DB commit, partial websocket fanout outage, transient projector downtime.
+> Risk: enqueue-after-commit without a durable handoff can lose projection work and violate reliability goals.
+
+> Suggested [Impact: High] [Effort: M]: Make channel history reads explicitly cache-first with deterministic DB fallback and stable ordering guarantees, so hot windows are memory-backed while stale/missing windows degrade cleanly to MySQL.
+> Source: user request — design/update.md
+> Approach: formalize read ordering and merge rules in `src/main/java/com/java_mess/java_mess/service/MessageServiceImpl.java` for `latest/before/after`; define Redis hot-window read attempt + `MessageRepository.findLatestMessages/listMessagesBeforeId/listMessagesAfterId` fallback contract; keep API payload shape unchanged unless explicitly versioned.
+> Builds on: existing hot-store-first logic and pivot-window query semantics.
+> Constraints: keep current external HTTP contract backward compatible unless the design explicitly introduces a new endpoint/version.
+> Edge cases: pivot windows spanning hot-cache boundaries, cache stale/partial records, zero-limit reads, concurrent sends during read composition.
+> Risk: inconsistent merge semantics across cache/DB paths can regress client pagination behavior.
