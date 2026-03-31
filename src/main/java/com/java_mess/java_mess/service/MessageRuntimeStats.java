@@ -10,4 +10,8 @@ public class MessageRuntimeStats {
     private long hotPartialWithDbFallback;
     private long dbOnly;
     private ChannelHotStoreStats hotStore;
+    private LatencySnapshot sendLatency;
+    private LatencySnapshot historyLatency;
+    private ProjectionRuntimeStats projection;
+    private ProjectionCacheRuntimeStats projectionCache;
 }

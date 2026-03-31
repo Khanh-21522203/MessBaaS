@@ -107,6 +107,30 @@ public class ChannelMemberRepository {
         }
     }
 
+    public List<String> listChannelIdsByUser(String userId) {
+        String sql = """
+            select channelId
+            from channelMember
+            where userId = ?
+            order by createdAt desc
+            """;
+        try (
+            Connection connection = dataSource.getConnection();
+            PreparedStatement statement = connection.prepareStatement(sql)
+        ) {
+            statement.setString(1, userId);
+            try (ResultSet resultSet = statement.executeQuery()) {
+                List<String> channelIds = new ArrayList<>();
+                while (resultSet.next()) {
+                    channelIds.add(resultSet.getString("channelId"));
+                }
+                return channelIds;
+            }
+        } catch (SQLException exception) {
+            throw new IllegalStateException("Failed to list user channel memberships", exception);
+        }
+    }
+
     private boolean isDuplicateKey(SQLException exception) {
         String sqlState = exception.getSQLState();
         return (sqlState != null && sqlState.startsWith("23")) || exception.getErrorCode() == 1062;

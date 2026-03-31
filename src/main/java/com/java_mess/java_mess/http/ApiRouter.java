@@ -30,6 +30,7 @@ import com.java_mess.java_mess.dto.channel.CreateChannelRequest;
 import com.java_mess.java_mess.dto.channel.CreateChannelResponse;
 import com.java_mess.java_mess.dto.channel.GetChannelResponse;
 import com.java_mess.java_mess.dto.channel.ListChannelResponse;
+import com.java_mess.java_mess.dto.inbox.ListInboxResponse;
 import com.java_mess.java_mess.dto.channel.AddChannelMemberRequest;
 import com.java_mess.java_mess.dto.channel.ChannelMemberResponse;
 import com.java_mess.java_mess.dto.channel.ListChannelMemberResponse;
@@ -57,6 +58,7 @@ import com.java_mess.java_mess.model.User;
 import com.java_mess.java_mess.service.ChannelService;
 import com.java_mess.java_mess.service.MessageService;
 import com.java_mess.java_mess.service.ChannelMembershipService;
+import com.java_mess.java_mess.service.InboxService;
 import com.java_mess.java_mess.service.ReadStateService;
 import com.java_mess.java_mess.service.ReadStateSnapshot;
 import com.java_mess.java_mess.service.UserService;
@@ -85,6 +87,7 @@ public class ApiRouter {
     private final ChannelMembershipService channelMembershipService;
     private final MessageService messageService;
     private final ReadStateService readStateService;
+    private final InboxService inboxService;
     private final ChannelWebSocketRegistry channelWebSocketRegistry;
     private final DataSource dataSource;
     private final AppConfig appConfig;
@@ -118,6 +121,9 @@ public class ApiRouter {
             }
             if (HttpMethod.GET.equals(method) && "/api/channels".equals(path)) {
                 return listChannels(decoder);
+            }
+            if (HttpMethod.GET.equals(method) && isInboxPath(path)) {
+                return listInbox(decoder);
             }
             if (HttpMethod.GET.equals(method) && isChannelByIdPath(path)) {
                 return getChannelById(path);
@@ -294,6 +300,7 @@ public class ApiRouter {
     private FullHttpResponse runtimeStats() {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("message", messageService.runtimeStats());
+        body.put("inbox", inboxService.runtimeStats());
         body.put("websocket", channelWebSocketRegistry.snapshotStats());
         body.put("runtime", Map.of(
             "bossThreads", appConfig.getBossThreads(),
@@ -301,6 +308,24 @@ public class ApiRouter {
             "businessThreads", resolveBusinessThreads()
         ));
         return jsonResponse(OK, body);
+    }
+
+    private FullHttpResponse listInbox(QueryStringDecoder decoder) throws JsonProcessingException {
+        String clientUserId = queryParam(decoder, "clientUserId");
+        RequestValidator.requireNonBlank(clientUserId, "clientUserId");
+        int defaultLimit = Math.max(1, appConfig.getInboxDefaultLimit());
+        int limit = RequestValidator.requireInt(queryParamOrDefault(decoder, "limit", String.valueOf(defaultLimit)), "limit");
+        RequestValidator.requirePositive(limit, "limit");
+        if (limit > appConfig.getInboxMaxLimit()) {
+            throw new IllegalArgumentException("limit must be <= " + appConfig.getInboxMaxLimit());
+        }
+
+        return jsonResponse(
+            OK,
+            ListInboxResponse.builder()
+                .conversations(inboxService.listInbox(clientUserId, limit))
+                .build()
+        );
     }
 
     private FullHttpResponse sendMessage(String path, FullHttpRequest request) throws JsonProcessingException {
@@ -420,6 +445,10 @@ public class ApiRouter {
         return segments.length == 3
             && "api".equals(segments[0])
             && "messages".equals(segments[1]);
+    }
+
+    private boolean isInboxPath(String path) {
+        return "/api/inbox".equals(path);
     }
 
     private boolean isLiveHealthPath(String path) {

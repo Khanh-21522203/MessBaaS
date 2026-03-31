@@ -10,16 +10,22 @@ import com.java_mess.java_mess.http.HttpApiHandler;
 import com.java_mess.java_mess.repository.ChannelRepository;
 import com.java_mess.java_mess.repository.ChannelMemberRepository;
 import com.java_mess.java_mess.repository.MessageRepository;
+import com.java_mess.java_mess.repository.MessageOutboxRepository;
 import com.java_mess.java_mess.repository.UserRepository;
 import com.java_mess.java_mess.repository.UserReadMessageRepository;
 import com.java_mess.java_mess.server.NettyServer;
+import com.java_mess.java_mess.service.AsyncProjectionWorker;
 import com.java_mess.java_mess.service.ChannelMembershipService;
 import com.java_mess.java_mess.service.ChannelMembershipServiceImpl;
 import com.java_mess.java_mess.service.ChannelService;
 import com.java_mess.java_mess.service.ChannelServiceImpl;
 import com.java_mess.java_mess.service.ChannelMessageHotStore;
+import com.java_mess.java_mess.service.InboxService;
+import com.java_mess.java_mess.service.InboxServiceImpl;
 import com.java_mess.java_mess.service.MessageService;
 import com.java_mess.java_mess.service.MessageServiceImpl;
+import com.java_mess.java_mess.service.MessageProjectionProcessor;
+import com.java_mess.java_mess.service.ProjectionCacheStore;
 import com.java_mess.java_mess.service.ReadStateService;
 import com.java_mess.java_mess.service.ReadStateServiceImpl;
 import com.java_mess.java_mess.service.UserService;
@@ -33,6 +39,7 @@ import com.zaxxer.hikari.HikariDataSource;
 import org.flywaydb.core.Flyway;
 
 import lombok.extern.slf4j.Slf4j;
+import redis.clients.jedis.JedisPooled;
 
 @Slf4j
 public class MessBaaSServer {
@@ -47,28 +54,63 @@ public class MessBaaSServer {
 
         UserRepository userRepository = new UserRepository(dataSource);
         ChannelRepository channelRepository = new ChannelRepository(dataSource);
-        MessageRepository messageRepository = new MessageRepository(dataSource);
+        MessageOutboxRepository messageOutboxRepository = new MessageOutboxRepository(dataSource);
+        MessageRepository messageRepository = new MessageRepository(dataSource, messageOutboxRepository);
         ChannelMemberRepository channelMemberRepository = new ChannelMemberRepository(dataSource);
         UserReadMessageRepository userReadMessageRepository = new UserReadMessageRepository(dataSource);
+        JedisPooled redisClient = createRedisClient(config);
 
         ChannelWebSocketRegistry channelWebSocketRegistry = new ChannelWebSocketRegistry(objectMapper);
         ChannelMessageHotStore channelMessageHotStore = new ChannelMessageHotStore(config.getHotBufferPerChannel());
+        ProjectionCacheStore projectionCacheStore = new ProjectionCacheStore(objectMapper, redisClient, config.getHotBufferPerChannel());
 
         UserService userService = new UserServiceImpl(userRepository);
         ChannelService channelService = new ChannelServiceImpl(channelRepository);
         ChannelMembershipService channelMembershipService = new ChannelMembershipServiceImpl(
             channelRepository,
             userRepository,
-            channelMemberRepository
+            channelMemberRepository,
+            projectionCacheStore
         );
-        ReadStateService readStateService = new ReadStateServiceImpl(userRepository, channelRepository, userReadMessageRepository);
+        ReadStateService readStateService = new ReadStateServiceImpl(
+            userRepository,
+            channelRepository,
+            userReadMessageRepository,
+            projectionCacheStore
+        );
+        MessageProjectionProcessor messageProjectionProcessor = new MessageProjectionProcessor(
+            channelMessageHotStore,
+            projectionCacheStore,
+            channelWebSocketRegistry,
+            channelMemberRepository,
+            userReadMessageRepository,
+            config.getHotBufferPerChannel()
+        );
+        AsyncProjectionWorker asyncProjectionWorker = new AsyncProjectionWorker(
+            messageOutboxRepository,
+            messageProjectionProcessor,
+            config.getProjectionPollMillis(),
+            config.getProjectionBatchSize(),
+            config.getProjectionMaxAttempts(),
+            config.getProjectionBaseBackoffMillis(),
+            config.getProjectionLeaseMillis()
+        );
+        asyncProjectionWorker.start();
         MessageService messageService = new MessageServiceImpl(
             messageRepository,
             channelRepository,
             userRepository,
-            channelWebSocketRegistry,
             channelMessageHotStore,
-            channelMembershipService
+            channelMembershipService,
+            projectionCacheStore,
+            asyncProjectionWorker
+        );
+        InboxService inboxService = new InboxServiceImpl(
+            userRepository,
+            channelMemberRepository,
+            messageRepository,
+            userReadMessageRepository,
+            projectionCacheStore
         );
 
         ApiRouter apiRouter = new ApiRouter(
@@ -78,6 +120,7 @@ public class MessBaaSServer {
             channelMembershipService,
             messageService,
             readStateService,
+            inboxService,
             channelWebSocketRegistry,
             dataSource,
             config
@@ -94,6 +137,10 @@ public class MessBaaSServer {
 
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutting down MessBaaS");
+            asyncProjectionWorker.close();
+            if (redisClient != null) {
+                redisClient.close();
+            }
             dataSource.close();
         }));
 
@@ -125,5 +172,25 @@ public class MessBaaSServer {
         return config.getBusinessThreads() > 0
             ? config.getBusinessThreads()
             : Math.max(4, Runtime.getRuntime().availableProcessors() * 2);
+    }
+
+    private static JedisPooled createRedisClient(AppConfig config) {
+        if (!config.isRedisEnabled()) {
+            return null;
+        }
+        try {
+            JedisPooled client = new JedisPooled(config.getRedisHost(), config.getRedisPort());
+            client.ping();
+            log.info("Redis cache acceleration enabled host={} port={}", config.getRedisHost(), config.getRedisPort());
+            return client;
+        } catch (Exception exception) {
+            log.warn(
+                "Redis is enabled in config but unavailable. Continuing in degraded mode with MySQL + in-memory fallback host={} port={}",
+                config.getRedisHost(),
+                config.getRedisPort(),
+                exception
+            );
+            return null;
+        }
     }
 }

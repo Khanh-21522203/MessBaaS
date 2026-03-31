@@ -30,6 +30,8 @@ import com.java_mess.java_mess.model.Message;
 import com.java_mess.java_mess.model.User;
 import com.java_mess.java_mess.service.ChannelMembershipService;
 import com.java_mess.java_mess.service.ChannelService;
+import com.java_mess.java_mess.service.InboxRuntimeStats;
+import com.java_mess.java_mess.service.InboxService;
 import com.java_mess.java_mess.service.MessageRuntimeStats;
 import com.java_mess.java_mess.service.MessageService;
 import com.java_mess.java_mess.service.ReadStateService;
@@ -134,6 +136,7 @@ class ApiRouterReadStateTest {
             new NoopChannelMembershipService(),
             new NoopMessageService(),
             readStateService,
+            new NoopInboxService(),
             new ChannelWebSocketRegistry(objectMapper),
             new NoopDataSource(),
             AppConfig.builder()
@@ -271,6 +274,18 @@ class ApiRouterReadStateTest {
         @Override
         public MessageRuntimeStats runtimeStats() {
             return MessageRuntimeStats.builder().build();
+        }
+    }
+
+    private static final class NoopInboxService implements InboxService {
+        @Override
+        public List<com.java_mess.java_mess.model.InboxEntry> listInbox(String clientUserId, int limit) {
+            throw new UnsupportedOperationException("Not used in this test");
+        }
+
+        @Override
+        public InboxRuntimeStats runtimeStats() {
+            return InboxRuntimeStats.builder().build();
         }
     }
 

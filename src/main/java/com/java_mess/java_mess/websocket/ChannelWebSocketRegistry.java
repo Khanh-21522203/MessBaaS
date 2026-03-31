@@ -2,6 +2,7 @@ package com.java_mess.java_mess.websocket;
 
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ConcurrentMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -24,6 +25,8 @@ public class ChannelWebSocketRegistry {
 
     private final ObjectMapper objectMapper;
     private final ConcurrentMap<String, ChannelGroup> channels = new ConcurrentHashMap<>();
+    private final AtomicLong broadcastAttempt = new AtomicLong();
+    private final AtomicLong broadcastFailed = new AtomicLong();
 
     public void register(String channelId, String clientUserId, Channel channel) {
         channel.attr(CHANNEL_ID_ATTRIBUTE).set(channelId);
@@ -53,6 +56,7 @@ public class ChannelWebSocketRegistry {
     }
 
     public void broadcast(String channelId, Object event) {
+        broadcastAttempt.incrementAndGet();
         if (channelId == null || channelId.isBlank()) {
             return;
         }
@@ -62,6 +66,7 @@ public class ChannelWebSocketRegistry {
         }
         String payload = serialize(event);
         if (payload == null) {
+            broadcastFailed.incrementAndGet();
             return;
         }
         group.writeAndFlush(new TextWebSocketFrame(payload));
@@ -71,6 +76,8 @@ public class ChannelWebSocketRegistry {
         return WebSocketRegistryStats.builder()
             .channelCount(channels.size())
             .activeConnectionCount(channels.values().stream().mapToInt(ChannelGroup::size).sum())
+            .broadcastAttempt(broadcastAttempt.get())
+            .broadcastFailed(broadcastFailed.get())
             .build();
     }
 
@@ -78,6 +85,7 @@ public class ChannelWebSocketRegistry {
         try {
             return objectMapper.writeValueAsString(event);
         } catch (JsonProcessingException exception) {
+            broadcastFailed.incrementAndGet();
             log.warn("Failed to serialize websocket event", exception);
             return null;
         }

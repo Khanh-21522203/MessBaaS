@@ -8,4 +8,6 @@ import lombok.Data;
 public class WebSocketRegistryStats {
     private int channelCount;
     private int activeConnectionCount;
+    private long broadcastAttempt;
+    private long broadcastFailed;
 }

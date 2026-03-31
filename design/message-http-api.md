@@ -2,136 +2,100 @@
 
 ### Purpose
 
-Accept message writes for a channel and retrieve message history windows around a pivot ID.
+Accept idempotent message writes and serve channel history windows, while keeping send latency MySQL-commit-first and moving fanout/projection work off the request path.
 
 ### Scope
 
 **In scope:**
-- `POST /api/messages/{channelId}` for message creation.
-- `GET /api/messages/{channelId}` with `clientUserId`, `pivotId`, `prevLimit`, `nextLimit` query parameters.
-- Validation/error mapping for message HTTP requests.
-- Read-path composition across hot buffer + database repository.
+- `POST /api/messages/{channelId}` send route.
+- `GET /api/messages/{channelId}` history route (`clientUserId`, `pivotId`, `prevLimit`, `nextLimit`).
+- Membership-gated access control and request validation.
+- Cache-first history reads with deterministic DB fallback.
 
 **Out of scope:**
-- WebSocket handshake framing.
-- Message edit/delete operations.
-- Read-receipt persistence (`userReadMessage`) behavior.
+- Message edit/delete.
+- Delivery acknowledgements over WebSocket.
+- Push notification delivery.
 
 ### Primary User Flow
 
-1. Client posts a message body (`clientUserId`, `message`, `imgUrl`) to a specific `channelId`.
-2. Send payload requires `clientMessageId` and at least one content field (`message` or `imgUrl`).
-3. Service validates user + channel + membership, persists/deduplicates message, and returns stored message JSON.
-4. Client requests history windows with `clientUserId/pivotId/prevLimit/nextLimit`.
-5. Service validates channel existence + membership and returns most-recent or before/after windows, using in-memory hot cache first then DB fallback.
+1. Client sends message payload with `clientMessageId`.
+2. Service validates user/channel/membership and writes message to MySQL.
+3. Message is returned immediately after authoritative persistence (no synchronous fanout/projection dependency).
+4. Background worker projects message to hot cache, inbox/unread cache, and WebSocket fanout.
+5. History reads return cache-first windows with DB gap fill.
 
 ### System Flow
 
-1. Entry point: `HttpApiHandler.channelRead0` -> `ApiRouter.route`.
-2. `ApiRouter.sendMessage` validates payload fields and calls `MessageServiceImpl.sendMessage`.
-3. `MessageServiceImpl.sendMessage` checks user + channel + membership, inserts/loads message via `MessageRepository.save` using `(channelId, clientMessageId)`, appends to `ChannelMessageHotStore`, broadcasts enriched `MessageEvent`.
-4. `ApiRouter.listMessages` requires `clientUserId` and parses query params with `RequestValidator.requireLong/requireInt/requireNonNegative`.
-5. `MessageServiceImpl.listMessages` branches:
-- `pivotId == 0`: latest messages (`hotStore.latest` first, then `MessageRepository.findLatestMessages` or `listMessagesBeforeId` to fill gaps).
-- `pivotId > 0`: combine `before` and `after` windows using hot store first then DB (`listMessagesBeforeId`, `listMessagesAfterId`).
-6. Router returns `SendMessageResponse` or `ListMessageResponse` JSON.
+1. `ApiRouter.sendMessage` validates payload and calls `MessageServiceImpl.sendMessage`.
+2. `MessageServiceImpl.sendMessage` checks membership and calls `MessageRepository.save`.
+3. `MessageRepository.save` writes message row and outbox row atomically in one transaction.
+4. `AsyncProjectionWorker` claims outbox rows and executes `MessageProjectionProcessor`.
+5. `ApiRouter.listMessages` calls `MessageServiceImpl.listMessages`, which uses:
+- Redis hot window via `ProjectionCacheStore` (when available),
+- in-process `ChannelMessageHotStore`,
+- MySQL repository fallback.
 
 ```
 POST /api/messages/{channelId}
-  -> ApiRouter.sendMessage
-      -> MessageServiceImpl.sendMessage
-          -> UserRepository.findByClientUserId
-          -> ChannelRepository.findById
-          -> MessageRepository.save
-          -> ChannelMessageHotStore.append
-          -> ChannelWebSocketRegistry.broadcast
+  -> MessageServiceImpl.sendMessage
+      -> MessageRepository.save (message + outbox, atomic)
+      -> return 200
 
-GET /api/messages/{channelId}?pivotId=&prevLimit=&nextLimit=
-  -> ApiRouter.listMessages
-      -> MessageServiceImpl.listMessages
-          -> hot store window lookup
-          -> DB fallback when hot window is insufficient
+AsyncProjectionWorker
+  -> MessageProjectionProcessor
+      -> hot cache + unread/inbox projection + websocket broadcast
 ```
 
 ### Data Model
 
-- `SendMessageRequest`: `clientUserId (String)`, `clientMessageId (String)`, `message (String?)`, `imgUrl (String?)`.
-- `ListMessageRequest`: `channelId (String)`, `clientUserId (String)`, `pivotId (long)`, `prevLimit (int)`, `nextLimit (int)`.
-- `Message` model fields: `id (Long auto-increment)`, `channel (Channel)`, `user (User)`, `clientMessageId (String)`, `message (String)`, `imgUrl (String?)`, `isDeleted (Boolean)`, `createdAt (Instant)`, `updatedAt (Instant)`.
-- Table `message` (`V1__init.sql` + `V2__message_contract.sql`):
-- `id BIGINT AUTO_INCREMENT PRIMARY KEY`
-- `channelId VARCHAR(36) NOT NULL` FK -> `channel(id)`
-- `userId VARCHAR(36) NOT NULL` FK -> ``user``(id)
-- `clientMessageId VARCHAR(128) NOT NULL` with unique `(channelId, clientMessageId)`
-- `message TEXT NOT NULL`, `imgUrl VARCHAR(2000) NULL`
-- `isDeleted TINYINT(1) NOT NULL`
-- `createdAt`, `updatedAt`
-- Index: `idx_message_channel_id_id(channelId, id)` for history scans.
+- Send DTO: `clientUserId`, `clientMessageId`, `message`, `imgUrl`.
+- History DTO: `channelId`, `clientUserId`, `pivotId`, `prevLimit`, `nextLimit`.
+- `message` table is authoritative.
+- `messageOutbox` table stores post-commit projection tasks.
 
 ### Interfaces and Contracts
 
 - `POST /api/messages/{channelId}`
-- Body: `{"clientUserId":string,"clientMessageId":string,"message"?:string,"imgUrl"?:string}`
-- Success: `200` with `{"message":{...}}`
-- Errors: `400` invalid payload, `403` membership denied, `404` user/channel missing, `409` conflicting `clientMessageId` payload reuse.
-- `GET /api/messages/{channelId}?clientUserId=<id>&pivotId=<long>&prevLimit=<int>&nextLimit=<int>`
-- Success: `200` with `{"messages":[...]}`
-- Errors: `400` missing/invalid query params or negative limits, `403` membership denied, `404` channel missing.
-- Query semantics:
-- `pivotId == 0` uses latest-message mode and ignores `nextLimit`.
-- `pivotId > 0` returns up to `prevLimit` older messages (descending IDs) plus up to `nextLimit` newer messages (ascending IDs).
+- Success: persisted message payload.
+- Errors: `400` invalid input, `403` membership denied, `404` user/channel not found, `409` idempotency conflict.
+- `GET /api/messages/{channelId}?clientUserId=&pivotId=&prevLimit=&nextLimit=`
+- Success: history window list.
+- Query semantics preserved:
+- `pivotId == 0` => latest mode (`prevLimit` only).
+- `pivotId > 0` => before(desc) + after(asc) windows.
 
 ### Dependencies
 
 **Internal modules:**
-- `http/ApiRouter`, `http/RequestValidator`.
-- `service/MessageServiceImpl`, `service/ChannelMessageHotStore`.
-- `repository/MessageRepository`, `repository/UserRepository`, `repository/ChannelRepository`.
-- `websocket/ChannelWebSocketRegistry` for fanout on write.
+- `http/ApiRouter`, `service/MessageServiceImpl`, `repository/MessageRepository`.
+- `service/ProjectionCacheStore`, `service/ChannelMessageHotStore`.
+- `service/AsyncProjectionWorker` + outbox repository.
 
 **External services/libraries:**
-- Jackson for JSON body serialization.
-- MySQL via JDBC data source.
+- MySQL/JDBC.
+- Redis (optional acceleration path).
 
 ### Failure Modes and Edge Cases
 
-- Blank `clientUserId` or `clientMessageId` -> `400`.
-- Both `message` and `imgUrl` blank -> `400`.
-- Max-length violations on `clientMessageId`, `message`, `imgUrl` -> `400`.
-- `pivotId`, `prevLimit`, `nextLimit` parse errors -> `400`.
-- Negative `prevLimit` or `nextLimit` -> `400`.
-- Unknown user or channel when sending -> `404`.
-- Unknown channel on list -> `404` (no silent empty-history fallback).
-- Membership check failures on send/list -> `403`.
-- `pivotId == 0` and `prevLimit <= 0` returns empty list.
-- Repository failures become `IllegalStateException` and map to `500`.
+- Duplicate `clientMessageId` with changed payload => `409`.
+- Outbox backlog growth can delay projection visibility but does not invalidate committed send success.
+- Redis unavailability yields cache misses and DB fallback.
+- History window gaps are filled from MySQL preserving ordering contract.
 
 ### Observability and Debugging
 
-- Global request failures logged in `ApiRouter.route` at WARN with path/method.
-- Message send success is not logged in `MessageServiceImpl`; websocket handler logs only debug when message is accepted from WS path.
-- No metrics for cache hit/miss or DB fallback frequency.
+- `MessageRuntimeStats` exposes:
+- hot/db read-path counters,
+- send/history latency p95/p99 snapshots,
+- projection backlog/retry/dead-letter stats,
+- projection cache health stats.
+- Global request failures are logged by `ApiRouter.route`.
 
 ### Risks and Notes
 
-- Response ordering for combined before/after windows is split by direction (older descending then newer ascending), not globally sorted.
-- `imgUrl` is optional; at least one of text/image content is required.
-- No pagination cursors besides numeric message ID pivot.
+- Because fanout/projection is asynchronous, users may briefly observe eventual consistency in inbox/unread/hot-cache views.
+- Message durability remains anchored to MySQL commit success.
 
 Changes:
 
-> Suggested [Impact: High] [Effort: L]: Redefine `POST /api/messages/{channelId}` as MySQL-commit-first, async-projection-second: return success once `MessageRepository` has authoritatively persisted/idempotently resolved the message, then enqueue projection/fanout work without adding queue/projector latency to the request critical path.
-> Source: user request — design/update.md
-> Approach: update `src/main/java/com/java_mess/java_mess/service/MessageServiceImpl.java` send flow to write an internal projection event after DB commit; keep HTTP validation/status mapping in `src/main/java/com/java_mess/java_mess/http/ApiRouter.java`; extend contracts around idempotent send + post-commit event enqueue so projector failures trigger async retry instead of request failure.
-> Builds on: current idempotent `MessageRepository.save`, membership gating, and existing send response contract.
-> Constraints: MySQL is authoritative; request-time reliability must not depend on Redis/projector availability.
-> Edge cases: duplicate `clientMessageId` retries, enqueue failure after DB commit, partial websocket fanout outage, transient projector downtime.
-> Risk: enqueue-after-commit without a durable handoff can lose projection work and violate reliability goals.
-
-> Suggested [Impact: High] [Effort: M]: Make channel history reads explicitly cache-first with deterministic DB fallback and stable ordering guarantees, so hot windows are memory-backed while stale/missing windows degrade cleanly to MySQL.
-> Source: user request — design/update.md
-> Approach: formalize read ordering and merge rules in `src/main/java/com/java_mess/java_mess/service/MessageServiceImpl.java` for `latest/before/after`; define Redis hot-window read attempt + `MessageRepository.findLatestMessages/listMessagesBeforeId/listMessagesAfterId` fallback contract; keep API payload shape unchanged unless explicitly versioned.
-> Builds on: existing hot-store-first logic and pivot-window query semantics.
-> Constraints: keep current external HTTP contract backward compatible unless the design explicitly introduces a new endpoint/version.
-> Edge cases: pivot windows spanning hot-cache boundaries, cache stale/partial records, zero-limit reads, concurrent sends during read composition.
-> Risk: inconsistent merge semantics across cache/DB paths can regress client pagination behavior.

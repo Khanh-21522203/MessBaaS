@@ -17,6 +17,17 @@ public class AppConfig {
     String dbPassword;
     String dbDriverClassName;
     int hotBufferPerChannel;
+    boolean redisEnabled;
+    String redisHost;
+    int redisPort;
+    int redisTimeoutMillis;
+    int projectionPollMillis;
+    int projectionBatchSize;
+    int projectionMaxAttempts;
+    int projectionBaseBackoffMillis;
+    int projectionLeaseMillis;
+    int inboxDefaultLimit;
+    int inboxMaxLimit;
 
     public static AppConfig from(Properties properties) {
         return AppConfig.builder()
@@ -29,12 +40,33 @@ public class AppConfig {
             .dbPassword(requiredProperty(properties, "db.password"))
             .dbDriverClassName(requiredProperty(properties, "db.driverClassName"))
             .hotBufferPerChannel(intProperty(properties, "message.hotBufferPerChannel", 2048))
+            .redisEnabled(booleanProperty(properties, "redis.enabled", false))
+            .redisHost(stringProperty(properties, "redis.host", "localhost"))
+            .redisPort(intProperty(properties, "redis.port", 6379))
+            .redisTimeoutMillis(intProperty(properties, "redis.timeoutMillis", 2_000))
+            .projectionPollMillis(intProperty(properties, "projection.pollMillis", 200))
+            .projectionBatchSize(intProperty(properties, "projection.batchSize", 100))
+            .projectionMaxAttempts(intProperty(properties, "projection.maxAttempts", 10))
+            .projectionBaseBackoffMillis(intProperty(properties, "projection.baseBackoffMillis", 200))
+            .projectionLeaseMillis(intProperty(properties, "projection.leaseMillis", 5_000))
+            .inboxDefaultLimit(intProperty(properties, "inbox.defaultLimit", 50))
+            .inboxMaxLimit(intProperty(properties, "inbox.maxLimit", 200))
             .build();
     }
 
     private static int intProperty(Properties properties, String key, int defaultValue) {
         String value = properties.getProperty(key);
         return value == null || value.isBlank() ? defaultValue : Integer.parseInt(value.trim());
+    }
+
+    private static boolean booleanProperty(Properties properties, String key, boolean defaultValue) {
+        String value = properties.getProperty(key);
+        return value == null || value.isBlank() ? defaultValue : Boolean.parseBoolean(value.trim());
+    }
+
+    private static String stringProperty(Properties properties, String key, String defaultValue) {
+        String value = properties.getProperty(key);
+        return value == null || value.isBlank() ? defaultValue : value.trim();
     }
 
     private static String requiredProperty(Properties properties, String key) {

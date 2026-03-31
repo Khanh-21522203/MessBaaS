@@ -2,85 +2,78 @@
 
 ### Purpose
 
-Restrict channel reads/writes/subscriptions to explicit channel members instead of global open access by channel ID.
+Enforce channel-level authorization for message send/read/WebSocket flows with a cache-first membership check that falls back to MySQL for correctness.
 
 ### Scope
 
 **In scope:**
-- Persist channel membership entries.
-- Add APIs to join/leave/list channel members.
-- Enforce membership checks on HTTP message send/history and WebSocket subscribe/send paths.
+- Membership add/remove/list HTTP routes.
+- `assertMember` enforcement for HTTP + WebSocket paths.
+- Redis/local membership cache acceleration.
+- DB fallback on cache misses or stale state.
 
 **Out of scope:**
-- Full authentication/identity provider integration.
-- Role/permission hierarchy beyond basic membership.
-- Private invite workflows.
+- Token-based authentication.
+- Role hierarchy beyond membership.
+- Invite workflows.
 
 ### Primary User Flow
 
-1. Channel creator adds members by `clientUserId`.
-2. Member subscribes via WebSocket and sends messages.
-3. Non-member attempts to subscribe/send/read and receives authorization error.
-4. Member list endpoint supports channel roster UIs.
+1. Client adds/removes channel member via HTTP.
+2. Membership cache is updated write-through.
+3. Send/read/handshake checks hit cache first.
+4. On cache miss, service verifies membership in DB and rehydrates cache.
 
 ### System Flow
 
-1. Membership routes in `ApiRouter` call channel-membership service methods.
-2. Membership service validates user/channel existence and writes to membership repository.
-3. `MessageServiceImpl.sendMessage/listMessages` calls membership service guard before DB/cache operations.
-4. `WebSocketHandshakeHandler` validates `channelId` and membership before allowing upgrade continuation.
+1. `ApiRouter` routes member operations to `ChannelMembershipServiceImpl`.
+2. `addMember/removeMember` mutate `ChannelMemberRepository` and update `ProjectionCacheStore`.
+3. `listMembers` returns DB roster and warms cache entries.
+4. `assertMember`:
+- resolve channel + user from repositories,
+- attempt cached lookup (`ProjectionCacheStore.isMemberCached`),
+- fallback to `ChannelMemberRepository.isMember` if needed,
+- deny with `ChannelAccessDeniedException` when not a member.
 
 ### Data Model
 
-- Table `channelMember` (`V3__channel_member.sql`):
-- `id VARCHAR(36) PRIMARY KEY`
-- `channelId VARCHAR(36) NOT NULL` FK `channel(id)` `ON DELETE CASCADE`
-- `userId VARCHAR(36) NOT NULL` FK ``user``(id) `ON DELETE CASCADE`
-- `createdAt`, `updatedAt`
-- Unique key `(channelId, userId)` enforces membership uniqueness.
+- Authoritative table: `channelMember(channelId, userId, createdAt, updatedAt)` unique `(channelId, userId)`.
+- Cache key: `channel:{channelId}:members` (user IDs).
 
 ### Interfaces and Contracts
 
-- `POST /api/channels/{channelId}/members` with `{"clientUserId":string}`
+- `POST /api/channels/{channelId}/members`
 - `DELETE /api/channels/{channelId}/members/{clientUserId}`
 - `GET /api/channels/{channelId}/members`
-- WebSocket handshake contract now requires `clientUserId` query param:
-- `GET /ws/channels?channelId=<id>&clientUserId=<id>`
 - Membership failures return `403`.
 
 ### Dependencies
 
 **Internal modules:**
-- `http/ApiRouter` route expansion.
-- `service/MessageServiceImpl` enforcement.
-- `websocket/WebSocketHandshakeHandler` enforcement.
-- New membership repository/service.
+- `service/ChannelMembershipServiceImpl`
+- `repository/ChannelMemberRepository`, `ChannelRepository`, `UserRepository`
+- `service/ProjectionCacheStore`
+- `websocket/WebSocketHandshakeHandler`, `service/MessageServiceImpl`
 
 **External services/libraries:**
-- Existing JDBC/MySQL/Flyway.
+- MySQL (authoritative).
+- Redis (optional cache acceleration).
 
 ### Failure Modes and Edge Cases
 
-- Duplicate member add returns `409`.
-- Removing non-member returns `404`.
-- Existing open channels require migration strategy for initial member seeding.
+- Duplicate add => `409`.
+- Remove non-member => `404`.
+- Cache false-negative/stale key => DB fallback preserves correctness.
+- Redis unavailable => DB-backed checks continue.
 
 ### Observability and Debugging
 
-- Log membership add/remove and denied access decisions with channel/user identifiers.
-- Track denied handshake count by channel to detect scraping/misuse.
+- Authorization errors appear in router/transport logs.
+- Cache-health counters are visible via projection cache runtime stats.
 
 ### Risks and Notes
 
-- This is a schema + transport behavior change; clients must handle `403` on previously open routes.
-- Membership identity is based on `clientUserId` (no token-based auth yet), so spoof resistance still depends on trusted client identity source.
+- Membership cache is an optimization only; correctness depends on DB fallback remaining intact.
 
 Changes:
 
-> Suggested [Impact: Med] [Effort: M]: Add a Redis membership cache (`channel:{channelId}:members`) as the fast path for send/read/ws authorization checks, with DB fallback and periodic reconciliation to keep permission correctness anchored to MySQL.
-> Source: user request — design/update.md
-> Approach: keep `src/main/java/com/java_mess/java_mess/service/ChannelMembershipServiceImpl.java` as the policy boundary; add cache-backed `isMember` lookup before JDBC repository checks; on add/remove member APIs in `src/main/java/com/java_mess/java_mess/http/ApiRouter.java`, update cache write-through and schedule reconciliation worker hooks from runtime wiring.
-> Builds on: existing membership repository and enforcement points in message + websocket flows.
-> Constraints: reliability over pure speed; access control must remain correct under cache miss/stale scenarios.
-> Edge cases: stale cache after failed write-through, Redis key eviction, concurrent add/remove races, cold-start channel with no cached set.
-> Risk: incorrect cache invalidation can create false denies/allows and impact core message delivery.

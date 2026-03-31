@@ -7,7 +7,6 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.java_mess.java_mess.dto.message.ListMessageRequest;
-import com.java_mess.java_mess.dto.message.MessageEvent;
 import com.java_mess.java_mess.dto.message.SendMessageRequest;
 import com.java_mess.java_mess.exception.ChannelNotFoundException;
 import com.java_mess.java_mess.exception.UserNotFoundException;
@@ -17,7 +16,6 @@ import com.java_mess.java_mess.model.User;
 import com.java_mess.java_mess.repository.ChannelRepository;
 import com.java_mess.java_mess.repository.MessageRepository;
 import com.java_mess.java_mess.repository.UserRepository;
-import com.java_mess.java_mess.websocket.ChannelWebSocketRegistry;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -28,82 +26,73 @@ public class MessageServiceImpl implements MessageService {
     private final MessageRepository messageRepository;
     private final ChannelRepository channelRepository;
     private final UserRepository userRepository;
-    private final ChannelWebSocketRegistry channelWebSocketRegistry;
     private final ChannelMessageHotStore channelMessageHotStore;
     private final ChannelMembershipService channelMembershipService;
+    private final ProjectionCacheStore projectionCacheStore;
+    private final AsyncProjectionWorker asyncProjectionWorker;
     private final AtomicLong hotOnlyReads = new AtomicLong();
     private final AtomicLong hotPartialWithDbFallbackReads = new AtomicLong();
     private final AtomicLong dbOnlyReads = new AtomicLong();
     private final AtomicLong readSamples = new AtomicLong();
+    private final LatencyTracker sendLatency = new LatencyTracker(2_048);
+    private final LatencyTracker historyLatency = new LatencyTracker(2_048);
 
     @Override
     public Message sendMessage(String channelId, SendMessageRequest request) {
-        User user = userRepository.findByClientUserId(request.getClientUserId())
-            .orElseThrow(UserNotFoundException::new);
-        Channel channel = channelRepository.findById(channelId)
-            .orElseThrow(ChannelNotFoundException::new);
-        channelMembershipService.assertMember(channel.getId(), request.getClientUserId());
-
-        Instant timeInstant = Instant.now();
-        Message message = messageRepository.save(Message.builder()
-            .channel(channel)
-            .user(user)
-            .clientMessageId(request.getClientMessageId())
-            .message(request.getMessage())
-            .imgUrl(request.getImgUrl())
-            .isDeleted(false)
-            .createdAt(timeInstant)
-            .build());
-
-        channelMessageHotStore.append(message);
-        
-        MessageEvent messageEvent = MessageEvent.builder()
-            .eventType("message.created")
-            .messageId(message.getId())
-            .clientUserId(message.getUser().getClientUserId())
-            .clientMessageId(message.getClientMessageId())
-            .channelId(channelId)
-            .message(message.getMessage())
-            .imgUrl(message.getImgUrl())
-            .createdAt(message.getCreatedAt())
-            .build();
-
-        publishEvent(messageEvent);
-        
-        return message;
-    }
-
-    private void publishEvent(MessageEvent messageEvent) {
+        long startedAt = System.nanoTime();
         try {
-            channelWebSocketRegistry.broadcast(messageEvent);
-        } catch (IllegalStateException exception) {
-            log.warn("Failed to publish websocket event channelId={}", messageEvent.getChannelId(), exception);
+            User user = userRepository.findByClientUserId(request.getClientUserId())
+                .orElseThrow(UserNotFoundException::new);
+            Channel channel = channelRepository.findById(channelId)
+                .orElseThrow(ChannelNotFoundException::new);
+            channelMembershipService.assertMember(channel.getId(), request.getClientUserId());
+
+            Instant timeInstant = Instant.now();
+            return messageRepository.save(Message.builder()
+                .channel(channel)
+                .user(user)
+                .clientMessageId(request.getClientMessageId())
+                .message(request.getMessage())
+                .imgUrl(request.getImgUrl())
+                .isDeleted(false)
+                .createdAt(timeInstant)
+                .build());
+        } finally {
+            sendLatency.recordNanos(System.nanoTime() - startedAt);
         }
     }
 
     @Override
     public List<Message> listMessages(ListMessageRequest request) {
-        channelRepository.findById(request.getChannelId()).orElseThrow(ChannelNotFoundException::new);
-        channelMembershipService.assertMember(request.getChannelId(), request.getClientUserId());
+        long startedAt = System.nanoTime();
+        try {
+            channelRepository.findById(request.getChannelId()).orElseThrow(ChannelNotFoundException::new);
+            channelMembershipService.assertMember(request.getChannelId(), request.getClientUserId());
 
-        if (request.getPivotId() == 0) {
-            if (request.getPrevLimit() <= 0) {
-                return Collections.emptyList();
+            if (request.getPivotId() == 0) {
+                if (request.getPrevLimit() <= 0) {
+                    return Collections.emptyList();
+                }
+                return latestMessages(request.getChannelId(), request.getPrevLimit());
             }
-            return latestMessages(request.getChannelId(), request.getPrevLimit());
+            List<Message> messages = new ArrayList<>();
+            if (request.getPrevLimit() > 0) {
+                messages.addAll(messagesBefore(request.getChannelId(), request.getPivotId(), request.getPrevLimit()));
+            }
+            if (request.getNextLimit() > 0) {
+                messages.addAll(messagesAfter(request.getChannelId(), request.getPivotId(), request.getNextLimit()));
+            }
+            return messages;
+        } finally {
+            historyLatency.recordNanos(System.nanoTime() - startedAt);
         }
-        List<Message> messages = new ArrayList<>();
-        if (request.getPrevLimit() > 0) {
-            messages.addAll(messagesBefore(request.getChannelId(), request.getPivotId(), request.getPrevLimit()));
-        }
-        if (request.getNextLimit() > 0) {
-            messages.addAll(messagesAfter(request.getChannelId(), request.getPivotId(), request.getNextLimit()));
-        }
-        return messages;
     }
 
     private List<Message> latestMessages(String channelId, int limit) {
-        List<Message> hotMessages = channelMessageHotStore.latest(channelId, limit);
+        List<Message> hotMessages = projectionCacheStore.latestHotMessages(channelId, limit);
+        if (hotMessages.isEmpty()) {
+            hotMessages = channelMessageHotStore.latest(channelId, limit);
+        }
         if (hotMessages.isEmpty()) {
             dbOnlyReads.incrementAndGet();
             maybeLogReadStats();
@@ -124,7 +113,10 @@ public class MessageServiceImpl implements MessageService {
     }
 
     private List<Message> messagesBefore(String channelId, long pivotId, int limit) {
-        List<Message> hotMessages = channelMessageHotStore.before(channelId, pivotId, limit);
+        List<Message> hotMessages = projectionCacheStore.beforeHotMessages(channelId, pivotId, limit);
+        if (hotMessages.isEmpty()) {
+            hotMessages = channelMessageHotStore.before(channelId, pivotId, limit);
+        }
         if (hotMessages.isEmpty()) {
             dbOnlyReads.incrementAndGet();
             maybeLogReadStats();
@@ -145,7 +137,10 @@ public class MessageServiceImpl implements MessageService {
     }
 
     private List<Message> messagesAfter(String channelId, long pivotId, int limit) {
-        List<Message> hotMessages = channelMessageHotStore.after(channelId, pivotId, limit);
+        List<Message> hotMessages = projectionCacheStore.afterHotMessages(channelId, pivotId, limit);
+        if (hotMessages.isEmpty()) {
+            hotMessages = channelMessageHotStore.after(channelId, pivotId, limit);
+        }
         if (hotMessages.isEmpty()) {
             dbOnlyReads.incrementAndGet();
             maybeLogReadStats();
@@ -172,6 +167,10 @@ public class MessageServiceImpl implements MessageService {
             .hotPartialWithDbFallback(hotPartialWithDbFallbackReads.get())
             .dbOnly(dbOnlyReads.get())
             .hotStore(channelMessageHotStore.snapshotStats())
+            .sendLatency(sendLatency.snapshot())
+            .historyLatency(historyLatency.snapshot())
+            .projection(asyncProjectionWorker.runtimeStats())
+            .projectionCache(projectionCacheStore.runtimeStats())
             .build();
     }
 

@@ -43,6 +43,7 @@ public class MessageRepository {
         """;
 
     private final DataSource dataSource;
+    private final MessageOutboxRepository messageOutboxRepository;
 
     public Message save(Message message) {
         Instant createdAt = message.getCreatedAt() != null ? message.getCreatedAt() : Instant.now();
@@ -53,24 +54,33 @@ public class MessageRepository {
             values (?, ?, ?, ?, ?, ?, ?, ?)
             """;
 
-        try (
-            Connection connection = dataSource.getConnection();
-            PreparedStatement statement = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)
-        ) {
-            statement.setString(1, message.getChannel().getId());
-            statement.setString(2, message.getUser().getId());
-            statement.setString(3, message.getClientMessageId());
-            statement.setString(4, message.getMessage());
-            statement.setString(5, message.getImgUrl());
-            statement.setBoolean(6, Boolean.TRUE.equals(message.getIsDeleted()));
-            statement.setTimestamp(7, Timestamp.from(createdAt));
-            statement.setTimestamp(8, Timestamp.from(updatedAt));
-            statement.executeUpdate();
-            try (ResultSet generatedKeys = statement.getGeneratedKeys()) {
-                if (!generatedKeys.next()) {
-                    throw new IllegalStateException("Failed to create message id");
+        try (Connection connection = dataSource.getConnection()) {
+            connection.setAutoCommit(false);
+            try {
+                try (PreparedStatement statement = connection.prepareStatement(sql, Statement.RETURN_GENERATED_KEYS)) {
+                    statement.setString(1, message.getChannel().getId());
+                    statement.setString(2, message.getUser().getId());
+                    statement.setString(3, message.getClientMessageId());
+                    statement.setString(4, message.getMessage());
+                    statement.setString(5, message.getImgUrl());
+                    statement.setBoolean(6, Boolean.TRUE.equals(message.getIsDeleted()));
+                    statement.setTimestamp(7, Timestamp.from(createdAt));
+                    statement.setTimestamp(8, Timestamp.from(updatedAt));
+                    statement.executeUpdate();
+                    try (ResultSet generatedKeys = statement.getGeneratedKeys()) {
+                        if (!generatedKeys.next()) {
+                            throw new IllegalStateException("Failed to create message id");
+                        }
+                        message.setId(generatedKeys.getLong(1));
+                    }
                 }
-                message.setId(generatedKeys.getLong(1));
+                messageOutboxRepository.insertOutboxEvent(connection, message);
+                connection.commit();
+            } catch (SQLException exception) {
+                connection.rollback();
+                throw exception;
+            } finally {
+                connection.setAutoCommit(true);
             }
         } catch (SQLException exception) {
             if (isDuplicateKey(exception)) {

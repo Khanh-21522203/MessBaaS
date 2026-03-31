@@ -19,12 +19,14 @@ public class ChannelMembershipServiceImpl implements ChannelMembershipService {
     private final ChannelRepository channelRepository;
     private final UserRepository userRepository;
     private final ChannelMemberRepository channelMemberRepository;
+    private final ProjectionCacheStore projectionCacheStore;
 
     @Override
     public void addMember(String channelId, String clientUserId) {
         Channel channel = channelRepository.findById(channelId).orElseThrow(ChannelNotFoundException::new);
         User user = userRepository.findByClientUserId(clientUserId).orElseThrow(UserNotFoundException::new);
         channelMemberRepository.addMember(channel.getId(), user.getId());
+        projectionCacheStore.cacheMembership(channel.getId(), user.getId());
     }
 
     @Override
@@ -35,20 +37,36 @@ public class ChannelMembershipServiceImpl implements ChannelMembershipService {
         if (!removed) {
             throw new ChannelMemberNotFoundException();
         }
+        projectionCacheStore.evictMembership(channel.getId(), user.getId());
     }
 
     @Override
     public List<User> listMembers(String channelId) {
         Channel channel = channelRepository.findById(channelId).orElseThrow(ChannelNotFoundException::new);
-        return channelMemberRepository.listMembers(channel.getId());
+        List<User> members = channelMemberRepository.listMembers(channel.getId());
+        for (User member : members) {
+            projectionCacheStore.cacheMembership(channel.getId(), member.getId());
+        }
+        return members;
     }
 
     @Override
     public void assertMember(String channelId, String clientUserId) {
         Channel channel = channelRepository.findById(channelId).orElseThrow(ChannelNotFoundException::new);
         User user = userRepository.findByClientUserId(clientUserId).orElseThrow(UserNotFoundException::new);
-        if (!channelMemberRepository.isMember(channel.getId(), user.getId())) {
+        Boolean cached = projectionCacheStore.isMemberCached(channel.getId(), user.getId());
+        if (Boolean.TRUE.equals(cached)) {
+            return;
+        }
+
+        boolean member = channelMemberRepository.isMember(channel.getId(), user.getId());
+        if (member) {
+            projectionCacheStore.cacheMembership(channel.getId(), user.getId());
+            return;
+        }
+        if (Boolean.FALSE.equals(cached)) {
             throw new ChannelAccessDeniedException();
         }
+        throw new ChannelAccessDeniedException();
     }
 }
