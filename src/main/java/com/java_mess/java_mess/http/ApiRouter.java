@@ -62,6 +62,7 @@ import com.java_mess.java_mess.service.InboxService;
 import com.java_mess.java_mess.service.ReadStateService;
 import com.java_mess.java_mess.service.ReadStateSnapshot;
 import com.java_mess.java_mess.service.UserService;
+import com.java_mess.java_mess.service.ProjectionReconcileWorker;
 import com.java_mess.java_mess.websocket.ChannelWebSocketRegistry;
 
 import io.netty.buffer.Unpooled;
@@ -91,6 +92,11 @@ public class ApiRouter {
     private final ChannelWebSocketRegistry channelWebSocketRegistry;
     private final DataSource dataSource;
     private final AppConfig appConfig;
+    private ProjectionReconcileWorker projectionReconcileWorker;
+
+    public void setProjectionReconcileWorker(ProjectionReconcileWorker projectionReconcileWorker) {
+        this.projectionReconcileWorker = projectionReconcileWorker;
+    }
 
     public FullHttpResponse route(FullHttpRequest request) {
         QueryStringDecoder decoder = new QueryStringDecoder(request.uri());
@@ -303,10 +309,17 @@ public class ApiRouter {
         body.put("inbox", inboxService.runtimeStats());
         body.put("websocket", channelWebSocketRegistry.snapshotStats());
         body.put("runtime", Map.of(
+            "deploymentMode", appConfig.getDeploymentMode(),
+            "localProjectionCacheEnabled", appConfig.isLocalProjectionCacheEnabled(),
             "bossThreads", appConfig.getBossThreads(),
             "workerThreads", resolveWorkerThreads(),
-            "businessThreads", resolveBusinessThreads()
+            "businessThreads", resolveBusinessThreads(),
+            "projectionReconcileBatchSize", appConfig.getProjectionReconcileBatchSize(),
+            "projectionReconcileIntervalSeconds", appConfig.getProjectionReconcileIntervalSeconds()
         ));
+        if (projectionReconcileWorker != null) {
+            body.put("reconciliation", projectionReconcileWorker.runtimeStats());
+        }
         return jsonResponse(OK, body);
     }
 

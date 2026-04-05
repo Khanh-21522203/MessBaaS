@@ -87,9 +87,13 @@ public class InboxServiceImpl implements InboxService {
 
     @Override
     public InboxRuntimeStats runtimeStats() {
+        long hits = cacheHit.get();
+        long fallbacks = dbFallback.get();
+        long total = hits + fallbacks;
         return InboxRuntimeStats.builder()
-            .cacheHit(cacheHit.get())
-            .dbFallback(dbFallback.get())
+            .cacheHit(hits)
+            .dbFallback(fallbacks)
+            .cacheHitRatio(total == 0 ? 0.0d : (double) hits / total)
             .latency(latencyTracker.snapshot())
             .build();
     }

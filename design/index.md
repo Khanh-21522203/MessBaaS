@@ -1,6 +1,6 @@
 # MessBaaS — Design Index
 
-MessBaaS is a single-node Java 21 chat backend on Netty + JDBC/MySQL with idempotent message sends, membership-gated HTTP/WebSocket access, async outbox-driven projections, and cache-accelerated history/inbox/unread reads.
+MessBaaS is a Java 21 chat backend on Netty + JDBC/MySQL with idempotent message sends, membership-gated HTTP/WebSocket access, async outbox-driven projections, optional Redis-backed distributed fanout, and cache-accelerated history/inbox/unread reads.
 
 ## Mental Map
 
@@ -34,10 +34,10 @@ MessBaaS is a single-node Java 21 chat backend on Netty + JDBC/MySQL with idempo
 └────────────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─ WebSocket Channel Stream ─────────────────────────────────────────────────────────────────┐
-│ Owns: membership-gated handshake, registry, inbound envelopes, outbound broadcast         │
+│ Owns: membership-gated handshake, registry, inbound envelopes, local+distributed broadcast│
 │ Entry: src/main/java/com/java_mess/java_mess/websocket/WebSocketHandshakeHandler.java    │
 │ Key:   src/main/java/com/java_mess/java_mess/websocket/ChannelWebSocketFrameHandler.java │
-│ Uses:  Message HTTP API, Channel Membership, Async Projection Pipeline                    │
+│ Uses:  Message HTTP API, Channel Membership, Async Projection Pipeline, Runtime Bootstrap │
 └────────────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─ Channel Hot Buffer Cache ─────────────────────────────────────────────────────────────────┐
@@ -45,6 +45,13 @@ MessBaaS is a single-node Java 21 chat backend on Netty + JDBC/MySQL with idempo
 │ Entry: src/main/java/com/java_mess/java_mess/service/ChannelMessageHotStore.java         │
 │ Key:   src/main/java/com/java_mess/java_mess/service/ProjectionCacheStore.java           │
 │ Uses:  Message HTTP API, Async Projection Pipeline                                        │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+
+┌─ Distributed JSON-Tree Read Model ──────────────────────────────────────────────────────────┐
+│ Owns: projection-first read semantics with SQL fallback + projection repair               │
+│ Entry: src/main/java/com/java_mess/java_mess/service/ProjectionCacheStore.java           │
+│ Key:   src/main/java/com/java_mess/java_mess/service/ReadStateServiceImpl.java           │
+│ Uses:  Message HTTP API, User Inbox Projection, Async Event Projection Pipeline           │
 └────────────────────────────────────────────────────────────────────────────────────────────┘
 
 ┌─ Channel Membership and Access Control ────────────────────────────────────────────────────┐
@@ -79,15 +86,16 @@ MessBaaS is a single-node Java 21 chat backend on Netty + JDBC/MySQL with idempo
 
 | Feature | Description | File | Status |
 |---------|-------------|------|--------|
-| Runtime Bootstrap and Wiring | Process startup, config, DB/Redis wiring, worker lifecycle | [runtime-bootstrap.md](runtime-bootstrap.md) | Stable |
+| Runtime Bootstrap and Wiring | Process startup, config, DB/Redis wiring, worker lifecycle | [runtime-bootstrap.md](runtime-bootstrap.md) | Active |
 | User HTTP API | Create/fetch users by client user ID | [user-http-api.md](user-http-api.md) | Stable |
 | Channel HTTP API | Create/list/get channels | [channel-http-api.md](channel-http-api.md) | Stable |
 | Message HTTP API | Idempotent send and history windows | [message-http-api.md](message-http-api.md) | Stable |
 | Idempotent Message Send and Reconnect-Safe Events | Client message idempotency behavior | [idempotent-message-send.md](idempotent-message-send.md) | Stable |
 | Async Event Projection Pipeline | Durable outbox + retry/backoff projection worker | [async-event-projection-pipeline.md](async-event-projection-pipeline.md) | Stable |
 | User Inbox Projection | Cache-first inbox read model and fallback | [user-inbox-projection.md](user-inbox-projection.md) | Stable |
-| WebSocket Channel Stream | Membership-gated websocket ingress/egress | [websocket-channel-stream.md](websocket-channel-stream.md) | Stable |
+| WebSocket Channel Stream | Membership-gated websocket ingress/egress with optional Redis cross-node fanout | [websocket-channel-stream.md](websocket-channel-stream.md) | Active |
 | Channel Hot Buffer Cache | Local + Redis accelerated hot history windows | [channel-hot-buffer.md](channel-hot-buffer.md) | Stable |
+| Distributed JSON-Tree Read Model | Projection-first read contracts, drift-safe cache updates, SQL repair path | [distributed-json-tree-read-model.md](distributed-json-tree-read-model.md) | Active |
 | JDBC Persistence and Schema | Flyway migrations and JDBC repositories | [jdbc-persistence.md](jdbc-persistence.md) | Stable |
 | Read Receipts and Unread State | Read cursor and unread computation/projection | [read-receipts-unread-state.md](read-receipts-unread-state.md) | Stable |
 | Channel Membership and Access Control | Membership APIs and authorization checks | [channel-membership.md](channel-membership.md) | Stable |
@@ -98,8 +106,10 @@ MessBaaS is a single-node Java 21 chat backend on Netty + JDBC/MySQL with idempo
 - Validation is centralized in `http/RequestValidator` and applied at HTTP/WebSocket boundaries.
 - HTTP error mapping is centralized in `ApiRouter.statusFor`.
 - Send path is MySQL-authoritative and no longer synchronously coupled to websocket fanout.
-- Post-commit side effects run through outbox-driven async projection.
+- Post-commit side effects run through outbox-driven async projection plus incremental reconciliation repair.
 - Redis acceleration is optional; degraded fallback keeps DB-backed correctness.
+- Projection reads are explicit `projection-first -> SQL fallback -> projection repair`.
+- In multi-node mode, websocket fanout publishes to Redis pub/sub and drops loopback deliveries by source node ID.
 
 ## Notes
 

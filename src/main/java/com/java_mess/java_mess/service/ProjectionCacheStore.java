@@ -22,21 +22,39 @@ public class ProjectionCacheStore {
     private final ObjectMapper objectMapper;
     private final JedisPooled redis;
     private final int hotWindowScanLimit;
+    private final boolean localProjectionCacheEnabled;
+
     private final ConcurrentMap<String, Set<String>> localMembership = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ConcurrentMap<String, Long>> localUnread = new ConcurrentHashMap<>();
+    private final ConcurrentMap<String, ConcurrentMap<String, Long>> localUnreadVersion = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ConcurrentMap<String, Long>> localReadCursor = new ConcurrentHashMap<>();
     private final ConcurrentMap<String, ConcurrentMap<String, InboxEntry>> localInbox = new ConcurrentHashMap<>();
+
     private final AtomicLong redisErrors = new AtomicLong();
     private final AtomicLong localFallbackReads = new AtomicLong();
+    private final AtomicLong projectionDriftDetected = new AtomicLong();
+    private final AtomicLong hotRepairWrites = new AtomicLong();
+    private final AtomicLong inboxRepairWrites = new AtomicLong();
+    private final AtomicLong readRepairWrites = new AtomicLong();
+    private final AtomicLong unreadRepairWrites = new AtomicLong();
 
     public ProjectionCacheStore(ObjectMapper objectMapper, JedisPooled redis, int hotWindowScanLimit) {
+        this(objectMapper, redis, hotWindowScanLimit, true);
+    }
+
+    public ProjectionCacheStore(ObjectMapper objectMapper, JedisPooled redis, int hotWindowScanLimit, boolean localProjectionCacheEnabled) {
         this.objectMapper = objectMapper;
         this.redis = redis;
         this.hotWindowScanLimit = Math.max(64, hotWindowScanLimit);
+        this.localProjectionCacheEnabled = localProjectionCacheEnabled;
     }
 
     public boolean isRedisEnabled() {
         return redis != null;
+    }
+
+    public boolean isLocalProjectionCacheEnabled() {
+        return localProjectionCacheEnabled;
     }
 
     public boolean isRedisAvailable() {
@@ -126,7 +144,9 @@ public class ProjectionCacheStore {
     }
 
     public void cacheMembership(String channelId, String userId) {
-        localMembership.computeIfAbsent(channelId, ignored -> ConcurrentHashMap.newKeySet()).add(userId);
+        if (localProjectionCacheEnabled) {
+            localMembership.computeIfAbsent(channelId, ignored -> ConcurrentHashMap.newKeySet()).add(userId);
+        }
         if (redis == null) {
             return;
         }
@@ -138,9 +158,11 @@ public class ProjectionCacheStore {
     }
 
     public void evictMembership(String channelId, String userId) {
-        Set<String> members = localMembership.get(channelId);
-        if (members != null) {
-            members.remove(userId);
+        if (localProjectionCacheEnabled) {
+            Set<String> members = localMembership.get(channelId);
+            if (members != null) {
+                members.remove(userId);
+            }
         }
         if (redis == null) {
             return;
@@ -160,6 +182,9 @@ public class ProjectionCacheStore {
                 redisErrors.incrementAndGet();
             }
         }
+        if (!localProjectionCacheEnabled) {
+            return null;
+        }
         Set<String> members = localMembership.get(channelId);
         if (members == null) {
             return null;
@@ -168,29 +193,41 @@ public class ProjectionCacheStore {
     }
 
     public void setReadCursor(String userId, String channelId, long readCursor) {
-        localReadCursor
-            .computeIfAbsent(userId, ignored -> new ConcurrentHashMap<>())
-            .put(channelId, readCursor);
-        if (redis == null) {
-            return;
+        long normalized = Math.max(0L, readCursor);
+        if (localProjectionCacheEnabled) {
+            localReadCursor
+                .computeIfAbsent(userId, ignored -> new ConcurrentHashMap<>())
+                .merge(channelId, normalized, Math::max);
         }
-        try {
-            redis.hset(readCursorKey(userId), channelId, String.valueOf(readCursor));
-        } catch (RuntimeException exception) {
-            redisErrors.incrementAndGet();
+        if (redis != null) {
+            try {
+                String key = readCursorKey(userId);
+                String current = redis.hget(key, channelId);
+                long currentValue = parseLong(current).orElse(-1L);
+                if (normalized > currentValue) {
+                    redis.hset(key, channelId, String.valueOf(normalized));
+                }
+            } catch (RuntimeException exception) {
+                redisErrors.incrementAndGet();
+            }
         }
+        readRepairWrites.incrementAndGet();
     }
 
     public Optional<Long> getReadCursor(String userId, String channelId) {
         if (redis != null) {
             try {
                 String value = redis.hget(readCursorKey(userId), channelId);
-                if (value != null) {
-                    return Optional.of(Long.parseLong(value));
+                Optional<Long> parsed = parseLong(value);
+                if (parsed.isPresent()) {
+                    return parsed;
                 }
             } catch (RuntimeException exception) {
                 redisErrors.incrementAndGet();
             }
+        }
+        if (!localProjectionCacheEnabled) {
+            return Optional.empty();
         }
         Map<String, Long> userRead = localReadCursor.get(userId);
         if (userRead == null) {
@@ -200,29 +237,31 @@ public class ProjectionCacheStore {
     }
 
     public void setUnreadCount(String userId, String channelId, long unreadCount) {
-        localUnread
-            .computeIfAbsent(userId, ignored -> new ConcurrentHashMap<>())
-            .put(channelId, unreadCount);
-        if (redis == null) {
-            return;
-        }
-        try {
-            redis.hset(unreadKey(userId), channelId, String.valueOf(unreadCount));
-        } catch (RuntimeException exception) {
-            redisErrors.incrementAndGet();
-        }
+        writeUnreadCount(userId, channelId, unreadCount, null, false);
+    }
+
+    public void setUnreadCountWithVersion(String userId, String channelId, long unreadCount, long sourceVersion) {
+        writeUnreadCount(userId, channelId, unreadCount, sourceVersion, true);
+    }
+
+    public void setUnreadCountFromProjection(String userId, String channelId, long unreadCount, long sourceMessageId) {
+        writeUnreadCount(userId, channelId, unreadCount, sourceMessageId, true);
     }
 
     public Optional<Long> getUnreadCount(String userId, String channelId) {
         if (redis != null) {
             try {
                 String value = redis.hget(unreadKey(userId), channelId);
-                if (value != null) {
-                    return Optional.of(Long.parseLong(value));
+                Optional<Long> parsed = parseLong(value);
+                if (parsed.isPresent()) {
+                    return parsed;
                 }
             } catch (RuntimeException exception) {
                 redisErrors.incrementAndGet();
             }
+        }
+        if (!localProjectionCacheEnabled) {
+            return Optional.empty();
         }
         Map<String, Long> unread = localUnread.get(userId);
         if (unread == null) {
@@ -232,17 +271,42 @@ public class ProjectionCacheStore {
     }
 
     public void upsertInboxEntry(String userId, InboxEntry entry) {
-        localInbox
-            .computeIfAbsent(userId, ignored -> new ConcurrentHashMap<>())
-            .put(entry.getChannelId(), entry);
-        if (redis == null) {
+        if (entry == null || entry.getChannelId() == null) {
             return;
         }
-        try {
-            redis.zadd(inboxOrderKey(userId), entry.getLastMessageId(), entry.getChannelId());
-            redis.hset(inboxValueKey(userId), entry.getChannelId(), serialize(entry));
-        } catch (RuntimeException exception) {
-            redisErrors.incrementAndGet();
+
+        boolean written = false;
+        if (localProjectionCacheEnabled) {
+            ConcurrentMap<String, InboxEntry> userInbox = localInbox.computeIfAbsent(userId, ignored -> new ConcurrentHashMap<>());
+            userInbox.compute(entry.getChannelId(), (ignored, existing) -> {
+                if (existing == null || entry.getLastMessageId() >= existing.getLastMessageId()) {
+                    return entry;
+                }
+                return existing;
+            });
+        }
+
+        if (redis != null) {
+            try {
+                String orderKey = inboxOrderKey(userId);
+                String channelId = entry.getChannelId();
+                String valueKey = inboxValueKey(userId);
+                double nextScore = entry.getLastMessageId();
+                Double currentScore = redis.zscore(orderKey, channelId);
+                if (currentScore == null || nextScore >= currentScore) {
+                    redis.zadd(orderKey, nextScore, channelId);
+                    redis.hset(valueKey, channelId, serialize(entry));
+                    written = true;
+                }
+            } catch (RuntimeException exception) {
+                redisErrors.incrementAndGet();
+            }
+        } else {
+            written = true;
+        }
+
+        if (written) {
+            inboxRepairWrites.incrementAndGet();
         }
     }
 
@@ -277,6 +341,9 @@ public class ProjectionCacheStore {
         }
 
         localFallbackReads.incrementAndGet();
+        if (!localProjectionCacheEnabled) {
+            return List.of();
+        }
         Map<String, InboxEntry> entries = localInbox.get(userId);
         if (entries == null || entries.isEmpty()) {
             return List.of();
@@ -287,13 +354,101 @@ public class ProjectionCacheStore {
             .toList();
     }
 
+    public void markHotRepairWrite(int count) {
+        if (count > 0) {
+            hotRepairWrites.addAndGet(count);
+        }
+    }
+
+    public void markInboxRepairWrite(int count) {
+        if (count > 0) {
+            inboxRepairWrites.addAndGet(count);
+        }
+    }
+
+    public void markReadRepairWrite(int count) {
+        if (count > 0) {
+            readRepairWrites.addAndGet(count);
+        }
+    }
+
+    public void markUnreadRepairWrite(int count) {
+        if (count > 0) {
+            unreadRepairWrites.addAndGet(count);
+        }
+    }
+
+    public void markProjectionDriftDetected() {
+        projectionDriftDetected.incrementAndGet();
+    }
+
     public ProjectionCacheRuntimeStats runtimeStats() {
         return ProjectionCacheRuntimeStats.builder()
             .redisEnabled(redis != null)
             .redisAvailable(isRedisAvailable())
             .redisErrors(redisErrors.get())
             .localFallbackReads(localFallbackReads.get())
+            .projectionDriftDetected(projectionDriftDetected.get())
+            .hotRepairWrites(hotRepairWrites.get())
+            .inboxRepairWrites(inboxRepairWrites.get())
+            .readRepairWrites(readRepairWrites.get())
+            .unreadRepairWrites(unreadRepairWrites.get())
             .build();
+    }
+
+    private void writeUnreadCount(String userId, String channelId, long unreadCount, Long sourceVersion, boolean monotonicGuard) {
+        long normalized = Math.max(0L, unreadCount);
+        Optional<Long> existingVersion = loadUnreadVersion(userId, channelId);
+
+        if (monotonicGuard && sourceVersion != null && existingVersion.isPresent() && sourceVersion < existingVersion.get()) {
+            markProjectionDriftDetected();
+            return;
+        }
+
+        if (localProjectionCacheEnabled) {
+            localUnread
+                .computeIfAbsent(userId, ignored -> new ConcurrentHashMap<>())
+                .put(channelId, normalized);
+            if (sourceVersion != null) {
+                localUnreadVersion
+                    .computeIfAbsent(userId, ignored -> new ConcurrentHashMap<>())
+                    .put(channelId, sourceVersion);
+            }
+        }
+
+        if (redis != null) {
+            try {
+                redis.hset(unreadKey(userId), channelId, String.valueOf(normalized));
+                if (sourceVersion != null) {
+                    redis.hset(unreadVersionKey(userId), channelId, String.valueOf(sourceVersion));
+                }
+            } catch (RuntimeException exception) {
+                redisErrors.incrementAndGet();
+            }
+        }
+
+        unreadRepairWrites.incrementAndGet();
+    }
+
+    private Optional<Long> loadUnreadVersion(String userId, String channelId) {
+        if (redis != null) {
+            try {
+                Optional<Long> parsed = parseLong(redis.hget(unreadVersionKey(userId), channelId));
+                if (parsed.isPresent()) {
+                    return parsed;
+                }
+            } catch (RuntimeException exception) {
+                redisErrors.incrementAndGet();
+            }
+        }
+        if (!localProjectionCacheEnabled) {
+            return Optional.empty();
+        }
+        Map<String, Long> versions = localUnreadVersion.get(userId);
+        if (versions == null) {
+            return Optional.empty();
+        }
+        return Optional.ofNullable(versions.get(channelId));
     }
 
     private List<Message> loadHotWindow(String channelId) {
@@ -332,6 +487,10 @@ public class ProjectionCacheStore {
         return "user:" + userId + ":unread";
     }
 
+    private String unreadVersionKey(String userId) {
+        return "user:" + userId + ":unread:version";
+    }
+
     private String inboxOrderKey(String userId) {
         return "user:" + userId + ":inbox:order";
     }
@@ -353,6 +512,17 @@ public class ProjectionCacheStore {
             return objectMapper.readValue(payload, type);
         } catch (IOException exception) {
             return null;
+        }
+    }
+
+    private Optional<Long> parseLong(String value) {
+        if (value == null || value.isBlank()) {
+            return Optional.empty();
+        }
+        try {
+            return Optional.of(Long.parseLong(value));
+        } catch (NumberFormatException ignored) {
+            return Optional.empty();
         }
     }
 }

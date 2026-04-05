@@ -29,7 +29,8 @@ Track authoritative read cursors in MySQL and expose unread counts through cache
 2. `UserReadMessageRepository.upsertReadCursor` enforces monotonic/clamped cursor behavior.
 3. `ReadStateServiceImpl` writes cached read cursor and unread count via `ProjectionCacheStore`.
 4. `ApiRouter.getUnreadCount` calls `ReadStateServiceImpl.getUnreadCount`.
-5. On message projection, `MessageProjectionProcessor` recalculates per-user unread and updates cache.
+5. On message projection, `MessageProjectionProcessor` recalculates per-user unread and updates cache with message-ID version guard.
+6. `ReadStateServiceImpl.getUnreadCount` compares cached cursor vs DB cursor and increments projection drift metrics when mismatched.
 
 ### Data Model
 
@@ -68,6 +69,7 @@ Track authoritative read cursors in MySQL and expose unread counts through cache
 
 - Read-state failures surface through API router warnings.
 - Projection cache health and fallback behavior visible in ops stats.
+- Drift and unread-repair counters are exposed through projection cache runtime stats.
 
 ### Risks and Notes
 
@@ -75,4 +77,3 @@ Track authoritative read cursors in MySQL and expose unread counts through cache
 - MySQL remains the source of truth for reconciliation.
 
 Changes:
-

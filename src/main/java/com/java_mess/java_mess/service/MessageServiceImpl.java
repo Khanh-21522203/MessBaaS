@@ -3,7 +3,9 @@ package com.java_mess.java_mess.service;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicLong;
 
 import com.java_mess.java_mess.dto.message.ListMessageRequest;
@@ -96,7 +98,9 @@ public class MessageServiceImpl implements MessageService {
         if (hotMessages.isEmpty()) {
             dbOnlyReads.incrementAndGet();
             maybeLogReadStats();
-            return messageRepository.findLatestMessages(channelId, limit);
+            List<Message> dbMessages = messageRepository.findLatestMessages(channelId, limit);
+            repairLocalHotProjection(dbMessages);
+            return dbMessages;
         }
         if (hotMessages.size() >= limit) {
             hotOnlyReads.incrementAndGet();
@@ -106,9 +110,16 @@ public class MessageServiceImpl implements MessageService {
 
         hotPartialWithDbFallbackReads.incrementAndGet();
         maybeLogReadStats();
-        List<Message> combined = new ArrayList<>(hotMessages);
-        long oldestHotMessageId = hotMessages.get(hotMessages.size() - 1).getId();
-        combined.addAll(messageRepository.listMessagesBeforeId(oldestHotMessageId, channelId, limit - hotMessages.size()));
+        List<Message> dbMessages = messageRepository.listMessagesBeforeId(
+            hotMessages.get(hotMessages.size() - 1).getId(),
+            channelId,
+            limit - hotMessages.size()
+        );
+        repairLocalHotProjection(dbMessages);
+        List<Message> combined = mergeOrdered(hotMessages, dbMessages);
+        if (combined.size() > limit) {
+            return new ArrayList<>(combined.subList(0, limit));
+        }
         return combined;
     }
 
@@ -120,7 +131,9 @@ public class MessageServiceImpl implements MessageService {
         if (hotMessages.isEmpty()) {
             dbOnlyReads.incrementAndGet();
             maybeLogReadStats();
-            return messageRepository.listMessagesBeforeId(pivotId, channelId, limit);
+            List<Message> dbMessages = messageRepository.listMessagesBeforeId(pivotId, channelId, limit);
+            repairLocalHotProjection(dbMessages);
+            return dbMessages;
         }
         if (hotMessages.size() >= limit) {
             hotOnlyReads.incrementAndGet();
@@ -130,9 +143,16 @@ public class MessageServiceImpl implements MessageService {
 
         hotPartialWithDbFallbackReads.incrementAndGet();
         maybeLogReadStats();
-        List<Message> combined = new ArrayList<>(hotMessages);
-        long dbPivot = hotMessages.get(hotMessages.size() - 1).getId();
-        combined.addAll(messageRepository.listMessagesBeforeId(dbPivot, channelId, limit - hotMessages.size()));
+        List<Message> dbMessages = messageRepository.listMessagesBeforeId(
+            hotMessages.get(hotMessages.size() - 1).getId(),
+            channelId,
+            limit - hotMessages.size()
+        );
+        repairLocalHotProjection(dbMessages);
+        List<Message> combined = mergeOrdered(hotMessages, dbMessages);
+        if (combined.size() > limit) {
+            return new ArrayList<>(combined.subList(0, limit));
+        }
         return combined;
     }
 
@@ -144,7 +164,9 @@ public class MessageServiceImpl implements MessageService {
         if (hotMessages.isEmpty()) {
             dbOnlyReads.incrementAndGet();
             maybeLogReadStats();
-            return messageRepository.listMessagesAfterId(pivotId, channelId, limit);
+            List<Message> dbMessages = messageRepository.listMessagesAfterId(pivotId, channelId, limit);
+            repairLocalHotProjection(dbMessages);
+            return dbMessages;
         }
         if (hotMessages.size() >= limit) {
             hotOnlyReads.incrementAndGet();
@@ -154,18 +176,68 @@ public class MessageServiceImpl implements MessageService {
 
         hotPartialWithDbFallbackReads.incrementAndGet();
         maybeLogReadStats();
-        List<Message> combined = new ArrayList<>(hotMessages);
-        long dbPivot = hotMessages.get(hotMessages.size() - 1).getId();
-        combined.addAll(messageRepository.listMessagesAfterId(dbPivot, channelId, limit - hotMessages.size()));
+        List<Message> dbMessages = messageRepository.listMessagesAfterId(
+            hotMessages.get(hotMessages.size() - 1).getId(),
+            channelId,
+            limit - hotMessages.size()
+        );
+        repairLocalHotProjection(dbMessages);
+        List<Message> combined = mergeOrdered(hotMessages, dbMessages);
+        if (combined.size() > limit) {
+            return new ArrayList<>(combined.subList(0, limit));
+        }
         return combined;
+    }
+
+    private List<Message> mergeOrdered(List<Message> first, List<Message> second) {
+        List<Message> merged = new ArrayList<>(first.size() + second.size());
+        Set<Long> seen = new HashSet<>();
+        appendUnique(merged, seen, first);
+        appendUnique(merged, seen, second);
+        return merged;
+    }
+
+    private void appendUnique(List<Message> output, Set<Long> seen, List<Message> source) {
+        for (Message message : source) {
+            if (message == null || message.getId() == null) {
+                continue;
+            }
+            if (!seen.add(message.getId())) {
+                projectionCacheStore.markProjectionDriftDetected();
+                continue;
+            }
+            output.add(message);
+        }
+    }
+
+    private void repairLocalHotProjection(List<Message> dbMessages) {
+        if (dbMessages == null || dbMessages.isEmpty()) {
+            return;
+        }
+        int writes = 0;
+        for (Message message : dbMessages) {
+            if (message == null || message.getId() == null || message.getChannel() == null || message.getChannel().getId() == null) {
+                continue;
+            }
+            channelMessageHotStore.append(message);
+            writes++;
+        }
+        projectionCacheStore.markHotRepairWrite(writes);
     }
 
     @Override
     public MessageRuntimeStats runtimeStats() {
+        long hotOnly = hotOnlyReads.get();
+        long hotPartialWithDbFallback = hotPartialWithDbFallbackReads.get();
+        long dbOnly = dbOnlyReads.get();
+        long totalReads = hotOnly + hotPartialWithDbFallback + dbOnly;
+
         return MessageRuntimeStats.builder()
-            .hotOnly(hotOnlyReads.get())
-            .hotPartialWithDbFallback(hotPartialWithDbFallbackReads.get())
-            .dbOnly(dbOnlyReads.get())
+            .hotOnly(hotOnly)
+            .hotPartialWithDbFallback(hotPartialWithDbFallback)
+            .dbOnly(dbOnly)
+            .hotHitRatio(totalReads == 0 ? 0.0d : (double) hotOnly / totalReads)
+            .dbFallbackRatio(totalReads == 0 ? 0.0d : (double) (hotPartialWithDbFallback + dbOnly) / totalReads)
             .hotStore(channelMessageHotStore.snapshotStats())
             .sendLatency(sendLatency.snapshot())
             .historyLatency(historyLatency.snapshot())

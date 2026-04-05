@@ -32,7 +32,7 @@ Process post-commit message side effects asynchronously (hot cache projection, u
 - `ChannelMessageHotStore.append`,
 - Redis hot cache append,
 - WebSocket `message.created` broadcast,
-- unread/read projection cache updates,
+- unread/read projection cache updates with message-ID version guard (`setUnreadCountFromProjection`),
 - inbox projection updates.
 4. Worker updates terminal outbox status (`markDone`, `markRetry`, `markDeadLetter`).
 
@@ -41,6 +41,7 @@ Process post-commit message side effects asynchronously (hot cache projection, u
 - `messageOutbox` statuses: `PENDING`, `IN_PROGRESS`, `RETRY`, `DONE`, `DEAD_LETTER`.
 - Retry control: `attemptCount`, `nextAttemptAt`, `lockedUntil`, `lastError`.
 - Projection payload fields include channel/message/sender identity and message content.
+- Unread projection writes are guarded by source message ID version to prevent stale retry regression.
 
 ### Interfaces and Contracts
 
@@ -68,6 +69,7 @@ Process post-commit message side effects asynchronously (hot cache projection, u
 ### Observability and Debugging
 
 - Projection runtime stats: backlog, in-progress, retry, dead-letter, processed/failed, lag p95/p99.
+- Projection cache stats expose drift and repair counters used to detect replay/out-of-order side effects.
 - Worker logs retry/dead-letter decisions with outbox/message identifiers.
 
 ### Risks and Notes
@@ -76,4 +78,3 @@ Process post-commit message side effects asynchronously (hot cache projection, u
 - Dead-letter handling is observable but not auto-replayed in this iteration.
 
 Changes:
-

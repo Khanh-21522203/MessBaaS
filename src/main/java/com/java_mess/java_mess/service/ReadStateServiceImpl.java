@@ -26,7 +26,7 @@ public class ReadStateServiceImpl implements ReadStateService {
         long storedCursor = userReadMessageRepository.upsertReadCursor(channel.getId(), user.getId(), lastReadMessageId);
         projectionCacheStore.setReadCursor(user.getId(), channel.getId(), storedCursor);
         long unread = userReadMessageRepository.countUnreadMessages(channel.getId(), storedCursor);
-        projectionCacheStore.setUnreadCount(user.getId(), channel.getId(), unread);
+        projectionCacheStore.setUnreadCountWithVersion(user.getId(), channel.getId(), unread, storedCursor);
         return storedCursor;
     }
 
@@ -34,14 +34,27 @@ public class ReadStateServiceImpl implements ReadStateService {
     public ReadStateSnapshot getUnreadCount(String channelId, String clientUserId) {
         User user = userRepository.findByClientUserId(clientUserId).orElseThrow(UserNotFoundException::new);
         Channel channel = channelRepository.findById(channelId).orElseThrow(ChannelNotFoundException::new);
+        String userId = user.getId();
+        String resolvedChannelId = channel.getId();
 
-        Optional<Long> cursor = userReadMessageRepository.findReadCursor(channel.getId(), user.getId());
-        cursor.ifPresent(value -> projectionCacheStore.setReadCursor(user.getId(), channel.getId(), value));
-        long unreadCount = projectionCacheStore.getUnreadCount(user.getId(), channel.getId())
-            .orElseGet(() -> cursor
-                .map(value -> userReadMessageRepository.countUnreadMessages(channel.getId(), value))
-                .orElseGet(() -> userReadMessageRepository.countAllMessages(channel.getId())));
-        projectionCacheStore.setUnreadCount(user.getId(), channel.getId(), unreadCount);
+        Optional<Long> cursor = userReadMessageRepository.findReadCursor(resolvedChannelId, userId);
+        Optional<Long> cachedCursor = projectionCacheStore.getReadCursor(userId, resolvedChannelId);
+        if (cursor.isPresent() && cachedCursor.isPresent() && !cursor.get().equals(cachedCursor.get())) {
+            projectionCacheStore.markProjectionDriftDetected();
+        }
+        cursor.ifPresent(value -> projectionCacheStore.setReadCursor(userId, resolvedChannelId, value));
+
+        Optional<Long> cachedUnread = projectionCacheStore.getUnreadCount(userId, resolvedChannelId);
+        long unreadCount;
+        if (cachedUnread.isPresent()) {
+            unreadCount = cachedUnread.get();
+        } else {
+            unreadCount = cursor
+                .map(value -> userReadMessageRepository.countUnreadMessages(resolvedChannelId, value))
+                .orElseGet(() -> userReadMessageRepository.countAllMessages(resolvedChannelId));
+            projectionCacheStore.markUnreadRepairWrite(1);
+        }
+        projectionCacheStore.setUnreadCount(userId, resolvedChannelId, unreadCount);
 
         return ReadStateSnapshot.builder()
             .lastReadMessageId(cursor.orElse(null))

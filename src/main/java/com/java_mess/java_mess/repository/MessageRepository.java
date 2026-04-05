@@ -148,6 +148,14 @@ public class MessageRepository {
         });
     }
 
+    public List<Message> listMessagesForReconcileAfterId(long id, int limit) {
+        String sql = MESSAGE_SELECT + " where m.id > ? order by m.id asc limit ?";
+        return queryMessages(sql, statement -> {
+            statement.setLong(1, id);
+            statement.setInt(2, limit);
+        });
+    }
+
     private List<Message> queryMessages(String sql, StatementBinder binder) {
         try (
             Connection connection = dataSource.getConnection();

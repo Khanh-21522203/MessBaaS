@@ -10,4 +10,10 @@ public class WebSocketRegistryStats {
     private int activeConnectionCount;
     private long broadcastAttempt;
     private long broadcastFailed;
+    private boolean distributedFanoutEnabled;
+    private long distributedPublishAttempt;
+    private long distributedPublishFailed;
+    private long distributedReceiveAttempt;
+    private long distributedReceiveDroppedLoop;
+    private long distributedReceiveFailed;
 }

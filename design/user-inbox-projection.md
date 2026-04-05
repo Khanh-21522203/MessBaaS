@@ -34,6 +34,7 @@ Serve user conversation lists from a denormalized projection cache with MySQL fa
 - compute unread counts from read cursor/message tables,
 - store rebuilt entries in projection cache.
 4. `MessageProjectionProcessor` also updates inbox entries during normal outbox processing.
+5. Projection writes use monotonic guards to avoid older retry events regressing inbox order or unread values.
 
 ### Data Model
 
@@ -41,6 +42,8 @@ Serve user conversation lists from a denormalized projection cache with MySQL fa
 - Redis keys (when enabled):
 - `user:{userId}:inbox:order` (`ZSET` score=`lastMessageId`, member=`channelId`)
 - `user:{userId}:inbox:value` (`HASH` field=`channelId`, value=serialized `InboxEntry`)
+- `user:{userId}:unread:version` (`HASH` field=`channelId`, value=`sourceMessageId`) for replay-safe unread updates.
+- Node-local projection maps can be disabled via `cache.localProjection.enabled`.
 
 ### Interfaces and Contracts
 
@@ -70,6 +73,7 @@ Serve user conversation lists from a denormalized projection cache with MySQL fa
 ### Observability and Debugging
 
 - `InboxRuntimeStats`: cache hits, DB fallbacks, latency snapshot.
+- `InboxRuntimeStats.cacheHitRatio` exposes projection effectiveness.
 - Combined with projection/cache stats from `/api/ops/stats`.
 
 ### Risks and Notes
@@ -78,4 +82,3 @@ Serve user conversation lists from a denormalized projection cache with MySQL fa
 - Inbox consistency is eventual between commit and projection completion.
 
 Changes:
-

@@ -10,4 +10,9 @@ public class ProjectionCacheRuntimeStats {
     private boolean redisAvailable;
     private long redisErrors;
     private long localFallbackReads;
+    private long projectionDriftDetected;
+    private long hotRepairWrites;
+    private long inboxRepairWrites;
+    private long readRepairWrites;
+    private long unreadRepairWrites;
 }

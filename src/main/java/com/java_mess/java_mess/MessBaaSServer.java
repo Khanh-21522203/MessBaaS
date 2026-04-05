@@ -11,6 +11,7 @@ import com.java_mess.java_mess.repository.ChannelRepository;
 import com.java_mess.java_mess.repository.ChannelMemberRepository;
 import com.java_mess.java_mess.repository.MessageRepository;
 import com.java_mess.java_mess.repository.MessageOutboxRepository;
+import com.java_mess.java_mess.repository.ProjectionReconcileStateRepository;
 import com.java_mess.java_mess.repository.UserRepository;
 import com.java_mess.java_mess.repository.UserReadMessageRepository;
 import com.java_mess.java_mess.server.NettyServer;
@@ -26,6 +27,7 @@ import com.java_mess.java_mess.service.MessageService;
 import com.java_mess.java_mess.service.MessageServiceImpl;
 import com.java_mess.java_mess.service.MessageProjectionProcessor;
 import com.java_mess.java_mess.service.ProjectionCacheStore;
+import com.java_mess.java_mess.service.ProjectionReconcileWorker;
 import com.java_mess.java_mess.service.ReadStateService;
 import com.java_mess.java_mess.service.ReadStateServiceImpl;
 import com.java_mess.java_mess.service.UserService;
@@ -40,6 +42,7 @@ import org.flywaydb.core.Flyway;
 
 import lombok.extern.slf4j.Slf4j;
 import redis.clients.jedis.JedisPooled;
+import java.util.UUID;
 
 @Slf4j
 public class MessBaaSServer {
@@ -55,6 +58,7 @@ public class MessBaaSServer {
         UserRepository userRepository = new UserRepository(dataSource);
         ChannelRepository channelRepository = new ChannelRepository(dataSource);
         MessageOutboxRepository messageOutboxRepository = new MessageOutboxRepository(dataSource);
+        ProjectionReconcileStateRepository projectionReconcileStateRepository = new ProjectionReconcileStateRepository(dataSource);
         MessageRepository messageRepository = new MessageRepository(dataSource, messageOutboxRepository);
         ChannelMemberRepository channelMemberRepository = new ChannelMemberRepository(dataSource);
         UserReadMessageRepository userReadMessageRepository = new UserReadMessageRepository(dataSource);
@@ -62,7 +66,26 @@ public class MessBaaSServer {
 
         ChannelWebSocketRegistry channelWebSocketRegistry = new ChannelWebSocketRegistry(objectMapper);
         ChannelMessageHotStore channelMessageHotStore = new ChannelMessageHotStore(config.getHotBufferPerChannel());
-        ProjectionCacheStore projectionCacheStore = new ProjectionCacheStore(objectMapper, redisClient, config.getHotBufferPerChannel());
+        ProjectionCacheStore projectionCacheStore = new ProjectionCacheStore(
+            objectMapper,
+            redisClient,
+            config.getHotBufferPerChannel(),
+            config.isLocalProjectionCacheEnabled()
+        );
+        if (redisClient != null && !"single-node".equalsIgnoreCase(config.getDeploymentMode())) {
+            channelWebSocketRegistry.startDistributedFanout(
+                redisClient,
+                config.getRedisHost(),
+                config.getRedisPort(),
+                "node-" + UUID.randomUUID()
+            );
+        }
+        log.info(
+            "Starting MessBaaS deploymentMode={} localProjectionCacheEnabled={} redisEnabled={}",
+            config.getDeploymentMode(),
+            config.isLocalProjectionCacheEnabled(),
+            config.isRedisEnabled()
+        );
 
         UserService userService = new UserServiceImpl(userRepository);
         ChannelService channelService = new ChannelServiceImpl(channelRepository);
@@ -96,6 +119,14 @@ public class MessBaaSServer {
             config.getProjectionLeaseMillis()
         );
         asyncProjectionWorker.start();
+        ProjectionReconcileWorker projectionReconcileWorker = new ProjectionReconcileWorker(
+            projectionReconcileStateRepository,
+            messageRepository,
+            messageProjectionProcessor,
+            config.getProjectionReconcileBatchSize(),
+            config.getProjectionReconcileIntervalSeconds()
+        );
+        projectionReconcileWorker.start();
         MessageService messageService = new MessageServiceImpl(
             messageRepository,
             channelRepository,
@@ -125,6 +156,7 @@ public class MessBaaSServer {
             dataSource,
             config
         );
+        apiRouter.setProjectionReconcileWorker(projectionReconcileWorker);
         HttpApiHandler httpApiHandler = new HttpApiHandler(apiRouter);
         WebSocketHandshakeHandler webSocketHandshakeHandler = new WebSocketHandshakeHandler(channelMembershipService);
         ChannelWebSocketFrameHandler webSocketFrameHandler = new ChannelWebSocketFrameHandler(
@@ -138,6 +170,8 @@ public class MessBaaSServer {
         Runtime.getRuntime().addShutdownHook(new Thread(() -> {
             log.info("Shutting down MessBaaS");
             asyncProjectionWorker.close();
+            projectionReconcileWorker.close();
+            channelWebSocketRegistry.close();
             if (redisClient != null) {
                 redisClient.close();
             }

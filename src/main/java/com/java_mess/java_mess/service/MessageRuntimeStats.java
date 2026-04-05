@@ -9,6 +9,8 @@ public class MessageRuntimeStats {
     private long hotOnly;
     private long hotPartialWithDbFallback;
     private long dbOnly;
+    private double hotHitRatio;
+    private double dbFallbackRatio;
     private ChannelHotStoreStats hotStore;
     private LatencySnapshot sendLatency;
     private LatencySnapshot historyLatency;

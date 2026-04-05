@@ -8,5 +8,6 @@ import lombok.Data;
 public class InboxRuntimeStats {
     private long cacheHit;
     private long dbFallback;
+    private double cacheHitRatio;
     private LatencySnapshot latency;
 }

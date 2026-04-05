@@ -34,7 +34,7 @@ Accept idempotent message writes and serve channel history windows, while keepin
 5. `ApiRouter.listMessages` calls `MessageServiceImpl.listMessages`, which uses:
 - Redis hot window via `ProjectionCacheStore` (when available),
 - in-process `ChannelMessageHotStore`,
-- MySQL repository fallback.
+- MySQL repository fallback with deterministic merge/de-dup and local hot-window repair.
 
 ```
 POST /api/messages/{channelId}
@@ -64,6 +64,7 @@ AsyncProjectionWorker
 - Query semantics preserved:
 - `pivotId == 0` => latest mode (`prevLimit` only).
 - `pivotId > 0` => before(desc) + after(asc) windows.
+- Read precedence is explicit: `projection-first -> SQL fallback -> projection repair`.
 
 ### Dependencies
 
@@ -87,6 +88,7 @@ AsyncProjectionWorker
 
 - `MessageRuntimeStats` exposes:
 - hot/db read-path counters,
+- hot-hit and db-fallback ratios,
 - send/history latency p95/p99 snapshots,
 - projection backlog/retry/dead-letter stats,
 - projection cache health stats.
@@ -98,4 +100,3 @@ AsyncProjectionWorker
 - Message durability remains anchored to MySQL commit success.
 
 Changes:
-

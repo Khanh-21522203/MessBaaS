@@ -9,7 +9,7 @@ Expose operational readiness and low-latency/reliability signals for the asynchr
 **In scope:**
 - Health probes (`/health/live`, `/healthz`, `/health/ready`, `/readyz`).
 - Runtime metrics endpoint (`/api/ops/stats`).
-- Message read/send latency snapshots, projection queue health, cache health, inbox read stats, websocket broadcast counters.
+- Message read/send latency snapshots, projection queue health, reconciliation progress, cache health, inbox read stats, websocket broadcast/distributed counters.
 
 **Out of scope:**
 - External metrics backend (Prometheus/Otel).
@@ -28,12 +28,14 @@ Expose operational readiness and low-latency/reliability signals for the asynchr
 - `message` (`MessageRuntimeStats`),
 - `inbox` (`InboxRuntimeStats`),
 - `websocket` (`WebSocketRegistryStats`),
+- `reconciliation` (`ProjectionReconcileRuntimeStats`) when reconcile worker is wired,
 - `runtime` thread config summary.
 3. `MessageRuntimeStats` includes:
 - hot/db read-path counters,
+- hot-hit/db-fallback ratios,
 - send/history latency p95/p99,
 - projection worker stats (`pendingBacklog`, `retry`, `deadLetter`, lag snapshot),
-- projection cache stats (Redis enabled/available/errors/fallback reads).
+- projection cache stats (Redis enabled/available/errors/fallback reads, drift, repair writes).
 
 ### Data Model
 
@@ -66,8 +68,11 @@ Expose operational readiness and low-latency/reliability signals for the asynchr
 ### Observability and Debugging
 
 - Use `message.projection.pendingBacklog/retry/deadLetter` to identify projection pressure.
+- Use `reconciliation.checkpoint/cycles/failed` to track incremental repair progress.
 - Use `message.projectionCache.redisErrors` and `localFallbackReads` to diagnose cache degradation.
-- Use `inbox.cacheHit/dbFallback` to assess projection effectiveness.
+- Use `message.projectionCache.projectionDriftDetected` and repair counters to detect stale projection behavior.
+- Use `inbox.cacheHit/dbFallback/cacheHitRatio` to assess projection effectiveness.
+- Use `websocket.distributed*` counters to validate cross-node fanout health and loopback suppression.
 
 ### Risks and Notes
 
@@ -75,4 +80,3 @@ Expose operational readiness and low-latency/reliability signals for the asynchr
 - No persistent metrics storage is included in this iteration.
 
 Changes:
-

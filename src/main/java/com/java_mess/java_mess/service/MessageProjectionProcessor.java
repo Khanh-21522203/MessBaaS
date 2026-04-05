@@ -29,21 +29,32 @@ public class MessageProjectionProcessor implements ProjectionProcessor {
 
     @Override
     public void process(MessageOutboxEvent event) {
+        processInternal(event, true);
+    }
+
+    @Override
+    public void processReplay(MessageOutboxEvent event) {
+        processInternal(event, false);
+    }
+
+    private void processInternal(MessageOutboxEvent event, boolean emitRealtime) {
         Message message = mapMessage(event);
         channelMessageHotStore.append(message);
         projectionCacheStore.appendHotMessage(message, hotBufferPerChannel);
 
-        MessageEvent websocketEvent = MessageEvent.builder()
-            .eventType("message.created")
-            .messageId(event.getMessageId())
-            .clientUserId(event.getSenderClientUserId())
-            .clientMessageId(event.getClientMessageId())
-            .channelId(event.getChannelId())
-            .message(event.getMessageBody())
-            .imgUrl(event.getImgUrl())
-            .createdAt(event.getMessageCreatedAt())
-            .build();
-        channelWebSocketRegistry.broadcast(websocketEvent);
+        if (emitRealtime) {
+            MessageEvent websocketEvent = MessageEvent.builder()
+                .eventType("message.created")
+                .messageId(event.getMessageId())
+                .clientUserId(event.getSenderClientUserId())
+                .clientMessageId(event.getClientMessageId())
+                .channelId(event.getChannelId())
+                .message(event.getMessageBody())
+                .imgUrl(event.getImgUrl())
+                .createdAt(event.getMessageCreatedAt())
+                .build();
+            channelWebSocketRegistry.broadcast(websocketEvent);
+        }
 
         List<User> members = channelMemberRepository.listMembers(event.getChannelId());
         for (User member : members) {
@@ -53,7 +64,7 @@ public class MessageProjectionProcessor implements ProjectionProcessor {
             long unread = cursor
                 .map(value -> userReadMessageRepository.countUnreadMessages(event.getChannelId(), value))
                 .orElseGet(() -> userReadMessageRepository.countAllMessages(event.getChannelId()));
-            projectionCacheStore.setUnreadCount(member.getId(), event.getChannelId(), unread);
+            projectionCacheStore.setUnreadCountFromProjection(member.getId(), event.getChannelId(), unread, event.getMessageId());
 
             InboxEntry entry = InboxEntry.builder()
                 .channelId(event.getChannelId())

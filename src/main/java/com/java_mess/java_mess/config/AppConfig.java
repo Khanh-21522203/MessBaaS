@@ -17,6 +17,8 @@ public class AppConfig {
     String dbPassword;
     String dbDriverClassName;
     int hotBufferPerChannel;
+    String deploymentMode;
+    boolean localProjectionCacheEnabled;
     boolean redisEnabled;
     String redisHost;
     int redisPort;
@@ -26,6 +28,8 @@ public class AppConfig {
     int projectionMaxAttempts;
     int projectionBaseBackoffMillis;
     int projectionLeaseMillis;
+    int projectionReconcileBatchSize;
+    int projectionReconcileIntervalSeconds;
     int inboxDefaultLimit;
     int inboxMaxLimit;
 
@@ -40,6 +44,8 @@ public class AppConfig {
             .dbPassword(requiredProperty(properties, "db.password"))
             .dbDriverClassName(requiredProperty(properties, "db.driverClassName"))
             .hotBufferPerChannel(intProperty(properties, "message.hotBufferPerChannel", 2048))
+            .deploymentMode(stringProperty(properties, "deployment.mode", "single-node"))
+            .localProjectionCacheEnabled(booleanProperty(properties, "cache.localProjection.enabled", true))
             .redisEnabled(booleanProperty(properties, "redis.enabled", false))
             .redisHost(stringProperty(properties, "redis.host", "localhost"))
             .redisPort(intProperty(properties, "redis.port", 6379))
@@ -49,6 +55,8 @@ public class AppConfig {
             .projectionMaxAttempts(intProperty(properties, "projection.maxAttempts", 10))
             .projectionBaseBackoffMillis(intProperty(properties, "projection.baseBackoffMillis", 200))
             .projectionLeaseMillis(intProperty(properties, "projection.leaseMillis", 5_000))
+            .projectionReconcileBatchSize(intProperty(properties, "projection.reconcileBatchSize", 500))
+            .projectionReconcileIntervalSeconds(intProperty(properties, "projection.reconcileIntervalSeconds", 300))
             .inboxDefaultLimit(intProperty(properties, "inbox.defaultLimit", 50))
             .inboxMaxLimit(intProperty(properties, "inbox.maxLimit", 200))
             .build();

@@ -2,7 +2,7 @@
 
 ### Purpose
 
-Serve recent channel history with low latency by combining Redis hot-window storage (when available) and in-process fallback buffering before MySQL fallback.
+Serve recent channel history with low latency by combining Redis hot-window storage (when available), in-process fallback buffering, and fallback-driven hot-window repair from MySQL reads.
 
 ### Scope
 
@@ -29,12 +29,14 @@ Serve recent channel history with low latency by combining Redis hot-window stor
 1. `MessageProjectionProcessor.process` appends to `ChannelMessageHotStore`.
 2. Same projection pass writes serialized message to Redis list via `ProjectionCacheStore.appendHotMessage` and trims by `hotBufferPerChannel`.
 3. `MessageServiceImpl.latest/messagesBefore/messagesAfter` attempts Redis hot reads (`ProjectionCacheStore`), then local hot-store reads, then DB.
+4. When DB fallback is used, `MessageServiceImpl` backfills the in-process hot store and records repair counters.
 
 ### Data Model
 
 - Redis key: `channel:{channelId}:messages:hot` (`LPUSH` + `LTRIM`).
 - Local state: `ChannelMessageHotStore.channels[channelId] -> TreeMap<messageId, Message>`.
 - Retention: bounded by `message.hotBufferPerChannel`.
+- Local hot cache can be disabled in multi-node mode via `cache.localProjection.enabled=false`.
 
 ### Interfaces and Contracts
 
@@ -63,6 +65,8 @@ Serve recent channel history with low latency by combining Redis hot-window stor
 
 - `ChannelHotStoreStats` for local in-memory hot-store behavior.
 - `ProjectionCacheRuntimeStats` for Redis availability/errors/fallback reads.
+- `ProjectionCacheRuntimeStats.hotRepairWrites` tracks local hot-window repair writes from DB fallback.
+- `ProjectionCacheRuntimeStats.projectionDriftDetected` increments when duplicate IDs appear during hot/db merge.
 - `MessageRuntimeStats` hot-only/hot-partial/db-only counters.
 
 ### Risks and Notes
@@ -71,4 +75,3 @@ Serve recent channel history with low latency by combining Redis hot-window stor
 - Local and Redis hot stores are acceleration layers only, not source of truth.
 
 Changes:
-
